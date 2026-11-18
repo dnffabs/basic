@@ -1,0 +1,30 @@
+# Python environments and caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# Analysis outputs and comparison artifacts
+outputs/
+
+# Generated test inputs and their build manifest (including external symlinks)
+/tests/fixtures/binaries/
+/tests/fixtures/manifest.json
+
+# Build products
+/build/
+/dist/
+*.egg-info/
+*.o
+*.a
+*.so
+*.so.*
+*.dll
+*.exe
+*.elf
+*.bin
+
+# Temporary files and logs
+*.tmp
+*.log

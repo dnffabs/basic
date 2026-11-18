@@ -1,0 +1,11 @@
+[project]
+name = "bpa-basic"
+version = "0.1.0"
+description = "Incremental implementation of block-based points-to analysis"
+requires-python = ">=3.10"
+dependencies = ["pyelftools==0.31", "cle==9.2.173"]
+
+[tool.uv]
+package = false
+# pyvex 9.2.173 imports ConstBitStream, removed by bitstring 5.
+constraint-dependencies = ["bitstring<5"]
