@@ -5,6 +5,9 @@ Git 只保存源码、编译脚本、测试代码和说明；`fixtures/binaries/
 ```text
 tests/
 ├── test_loader.py
+├── test_loader_extended.py
+├── test_cfg.py
+├── compare_m1_bpax.py
 └── fixtures/
     ├── sources/test.c  # 唯一的 C 测试程序
     ├── binaries/
@@ -48,9 +51,22 @@ PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 
 日常测试直接读取 `binaries/`，不会自动调用 GCC。只有明确修改或重建测试集时才运行 `build.sh`；重建会更新二进制和清单。清单保存源码与二进制的 SHA256，以识别样本变化；记录的是本次实际编译结果，不保证更换编译器或系统后仍得到相同字节。
 
-目前共有 11 项自动测试：基础 ELF 读取、32/64 位信息、样本完整性、原生行为、命令行输出，以及符号/导入/依赖/PLT、重定位后的导入槽、函数指针表、全局初始内容、BSS 零填充、JSON 往返。两项回归覆盖输出硬链接/符号链接保护和节区文件范围检查。
+目前共有 19 项自动测试：M1 原有 11 项，M2 新增 8 项。M1 覆盖基础 ELF 读取、32/64 位信息、样本完整性、原生行为、命令行输出，以及符号/导入/依赖/PLT、重定位后的导入槽、函数指针表、全局初始内容、BSS 零填充、JSON 往返；两项回归覆盖输出硬链接/符号链接保护和节区文件范围检查。
 
-`binaries/bzip2` 是指向 `/home/qc/Desktop/common/binaries/bzip2` 的软链接，其中包含 32/64 位、O0/O1/O2 共 6 个真实样本；由外部目录维护，不由 build.sh 重建。可按 README 的命令分别导出 M1 结果。已完成的验证记录见 [docs/M1.md](../docs/M1.md)；历史运行产物已清理，未运行完整 BPA-X 指针分析。
+M2 的 `test_cfg.py` 直接复用 `test_64`/`test_32`，没有新增 C 程序或重新编译，覆盖：
+
+- 函数入口、符号结束地址和恢复代码范围；
+- 基本块、指令连续性与边/归属一致性；
+- 按符号范围独立线性反汇编核对调用清单（`main` 为 7 个直接调用）；
+- `apply`/`invoke` 的未解析间接调用及调用续点；
+- AT 证据及“直接调用不算 AT”的约定；
+- M1 身份、schema、入口和位宽校验；
+- JSON 导出可序列化且确定；
+- CLI 复用已有 M1，生成两个 M2 产物且不修改 M1 文件。
+
+M2 产物与命令见 [docs/M2.md](../docs/M2.md)。
+
+`binaries/bzip2` 是指向 `/home/qc/Desktop/common/binaries/bzip2` 的软链接，其中包含 32/64 位、O0/O1/O2 共 6 个真实样本；由外部目录维护，不由 build.sh 重建。可按 README 的命令分别导出 M1 结果。已完成的 M1 验证记录见 [docs/M1.md](../docs/M1.md)；历史运行产物已清理。M2 目前只在两个固定样本上验证，尚未在这些 bzip2 样本上运行或验收，也未运行完整 BPA-X 指针分析。
 
 该软链接不提交 Git，新检出目录需要使用公共样本时创建：
 

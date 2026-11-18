@@ -1,8 +1,8 @@
 # BPA 基础实现
 
-当前实现 M1：ELF 加载、基础信息、符号、导入与依赖、重定位、PLT 和虚拟内存读取。
+当前实现 M1 和 M2：M1 负责 ELF 加载、基础信息、符号、导入与依赖、重定位、PLT 和虚拟内存读取；M2 在 M1 的 `BinaryInfo` 上识别函数并构建初始控制流图。
 
-加载器使用与本机 BPA-X 一致的 CLE 9.2.173，设置 `auto_load_libs=False`，执行 CLE 支持的重定位，不加载依赖库的真实代码。尚未构建 CFG 或生成 VEX facts。
+加载器使用与本机 BPA-X 一致的 CLE 9.2.173，设置 `auto_load_libs=False`，执行 CLE 支持的重定位，不加载依赖库的真实代码。M2 使用 angr 9.2.173 的 `CFGFast` 恢复函数、基本块、机器指令和初始边。尚未生成 VEX facts、对象内存块或指针分析结果。
 
 ## 运行
 
@@ -18,6 +18,23 @@ PYTHONPATH=src uv run python -m bpa tests/fixtures/binaries/test_64
 PYTHONPATH=src uv run python -m bpa tests/fixtures/binaries/test_64 \
   -o outputs/test_64/m1/binary.json
 ```
+
+M2 的 `-o` 是任务目录，一次生成 M1 输入记录和两个 M2 产物：
+
+```bash
+PYTHONPATH=src uv run --locked python -m bpa \
+  tests/fixtures/binaries/test_64 --stage m2 -o outputs/test_64
+```
+
+复用已有 M1 产物时不会重跑 M1，但仍会校验输入 ELF 的 SHA256 和加载契约：
+
+```bash
+PYTHONPATH=src uv run --locked python -m bpa \
+  tests/fixtures/binaries/test_64 --stage m2 \
+  --m1 outputs/test_64/m1/binary.json -o outputs/test_64
+```
+
+`--stage` 默认为 `m1`，此时 `-o` 仍表示单个 JSON 文件；`--m1` 只能与 `--stage m2` 一起使用。
 
 读取真实 bzip2 样本：
 
@@ -48,10 +65,35 @@ PYTHONPATH=src uv run --locked python -m bpa \
 
 区域范围与本机 BPA-X 的提取口径保持对应：可执行节区（无节区时回退到可执行 PT_LOAD），以及 `.data*`、`.bss*`、`.rodata*` 全局区域。它们不是 M4 的对象内存块。
 
+## M2 产物与约定
+
+M2 产物写入任务目录：
+
+```text
+outputs/<样本名>/
+├── m1/binary.json
+└── m2/
+    ├── functions.json
+    └── cfg.json
+```
+
+两个 M2 文件使用 schema 1 和 `address_space: elf-va`，绑定 ELF 的 `binary_sha256`、架构/位宽、`backend_version` 与 CFGFast 选项。`functions.json` 记录函数的入口、名称、来源（`elf-symbol`/`plt`/`cfgfast`）、符号结束地址、归属块、恢复代码区间及 AT 证据；`cfg.json` 记录基本块与机器指令、边、逐块转移、未解析间接转移、诊断和统计。
+
+主要约定：
+
+- 函数代码范围只来自恢复并归属的块，不假定函数连续，也不用下一个函数入口推算边界；归属不明的块保留在图中并在 `diagnostics` 记录。
+- `fake_return`/`assumed-return` 只是调用续点假设；`return`/`cfgfast-return` 是 `CFGFast` 推断，二者都不是已完成的过程间指针求解。
+- 间接目标恢复时保留来源（含跳转表）；未恢复时保留 `unresolved`，未知的 `UnresolvableCallTarget` 占位节点不导出为真实目标。完整间接调用目标求解不属于 M2。
+- AT 候选来自非直接 CALL/JMP 指令的立即数、可恢复的 LEA 地址和全局初始机器字，只保留命中已恢复函数入口的证据；候选不等同于入口可达或完整指针分析。
+- 当前只验证了两个固定的小样本。M2 统计包含启动/运行库辅助代码和 PLT，尚未对大型程序、PIE、stripped 或 bzip2 做 M2 验收。
+
+详细字段、边类型和测试结果见 [docs/M2.md](docs/M2.md)。
+
 ## 模块接口
 
 ```python
 from bpa.loader import load_elf, open_elf
+from bpa.cfg import build_cfg
 from bpa.model import BinaryInfo
 
 info = load_elf("tests/fixtures/binaries/test_64")
@@ -62,11 +104,19 @@ restored = BinaryInfo.from_dict(document)
 loaded = open_elf("tests/fixtures/binaries/test_64")
 address = loaded.to_mapped(loaded.info.entry)
 instruction_bytes = loaded.read_memory(address, 16)
+
+result = build_cfg(info)
+functions = result.functions_document()
+cfg = result.cfg_document()
 ```
 
 - `src/bpa/loader/elf.py`：元信息检查与 CLE 加载；`load_elf()` 返回可序列化模型，`open_elf()` 还提供内存读取及主 ELF 地址转换。文件读取失败抛出 `OSError`，解析/加载失败抛出 `ELFLoadError`，非法内存读取抛出 `ValueError`。
 - `src/bpa/model/binary.py`：独立数据模型，不依赖 pyelftools、CLE 或 angr，支持 JSON 字典往返。
-- `src/bpa/__main__.py`：命令行输入及 JSON 输出。
+- `src/bpa/cfg/builder.py`：`build_cfg(info)` 校验 M1 契约、重建私有 angr 项目并恢复函数/块/边/转移；失败抛出 `CFGError`。
+- `src/bpa/model/cfg.py`：M2 独立数据模型及 `functions.json`/`cfg.json` 文档生成。
+- `src/bpa/pipeline.py`：`run_m2(binary, output, m1_path=None, mapped_base=None)` 编排 M1→M2 并写入任务目录。
+- `src/bpa/artifacts.py`：原子 JSON 写入与输入 ELF 覆盖保护。
+- `src/bpa/__main__.py`：`m1`/`m2` 命令行入口及 JSON 输出。
 
 `read_memory()` 读取重定位后的映射内存，包含 BSS 初始零值；它不会执行程序，也不会产生运行后的全局变量值。转换 `to_elf()` 只适用于主 ELF，不能用于外部占位地址。内存本身不嵌入 JSON；后续阶段需要字节时重新打开同一个 SHA256 的 ELF，并使用记录的加载策略和映射基址。旧 schema 1 输出需要重新生成。
 
@@ -75,7 +125,9 @@ instruction_bytes = loaded.read_memory(address, 16)
 固定测试集使用 `tests/fixtures/binaries/`；二进制、外部样本软链接及生成的 `manifest.json` 不纳入 Git。首次使用或需要重建时执行 `bash tests/fixtures/build.sh`，日常测试不重编译。源码、GCC 编译选项和清单说明见 [tests/README.md](tests/README.md)。
 
 ```bash
-PYTHONPATH=src uv run python -m unittest discover -s tests -v
+PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 ```
 
-M1 阶段已完成。实现过程、产物契约、验证记录及复现命令统一整理在 [docs/M1.md](docs/M1.md)。历史运行产物已清理，需要时可重新生成。
+目前共 19 项自动测试：M1 原有 11 项，M2 新增 8 项。M2 测试只使用现有 `test_64`/`test_32`，覆盖函数与代码范围、图与指令完整性、独立线性反汇编调用清单、未解析间接调用与续点、AT 证据、M1 身份校验、导出确定性及 CLI 复用 M1。
+
+M1 与 M2 均已完成本地实现和固定样本测试。实现过程、产物契约、验证记录及复现命令分别整理在 [docs/M1.md](docs/M1.md) 和 [docs/M2.md](docs/M2.md)。M2 尚未在 bzip2、大型程序、PIE 或 stripped 样本上验收；历史运行产物已清理，需要时可重新生成。
