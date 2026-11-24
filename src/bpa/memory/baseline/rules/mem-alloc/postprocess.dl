@@ -1,0 +1,135 @@
+#include "../utils/types.dl"
+
+.decl mloc_sblk(mb_id: MemBlkID, func_addr: Addr, lower_bound: number, upper_bound: number, lower_valid_flag: Bool, upper_valid_flag: Bool, call_site: Addr)
+.input mloc_sblk
+
+.decl tmp_reg_offset(tmp_reg_id: TmpReg, offset: number)
+.input tmp_reg_offset
+
+.decl set_loc_vex_offset(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc, offset: number)
+.input set_loc_vex_offset
+
+.decl get_loc_vex_exp_offset(eid: Exp, loc: Loc, offset: number)
+.input get_loc_vex_exp_offset
+
+.decl tmp_reg_sblk_id(tmp_reg_id: TmpReg, mb_id: MemBlkID)
+.output tmp_reg_sblk_id(filename="tmp_reg_sblk_id.facts")
+
+.decl set_loc_vex_sblk_id(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc, mb_id: MemBlkID)
+.output set_loc_vex_sblk_id(filename="set_loc_vex_sblk_id.facts")
+
+.decl get_loc_vex_exp_sblk_id(eid: Exp, loc: Loc, mb_id: MemBlkID)
+.output get_loc_vex_exp_sblk_id(filename="get_loc_vex_exp_sblk_id.facts")
+
+.decl addr_func_instr(func_addr: Addr, instr_addr: Addr)
+.input addr_func_instr
+
+.decl set_tmp_reg_vex(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.input set_tmp_reg_vex
+
+.decl tmp_reg_func_arg_passing(tmp_reg_id: TmpReg, func_addr: Addr, offset: number, call_site: Addr)
+.input tmp_reg_func_arg_passing
+
+// convert offset to corresponding stack memory block id
+tmp_reg_sblk_id(tmp_reg_id, mb_id) :-
+    tmp_reg_offset(tmp_reg_id, stack_offset),
+    set_tmp_reg_vex(addr, _, _, _, tmp_reg_id),
+    addr_func_instr(func_addr, addr),
+    (
+        ( // this tmp_reg only corresponds to specific call site stack block
+            tmp_reg_func_arg_passing(tmp_reg_id, _, stack_offset, call_site),
+            mloc_sblk(mb_id, func_addr, lower, upper, lower_flag, upper_flag, call_site)
+        );
+        ( 
+            !tmp_reg_func_arg_passing(tmp_reg_id, _, stack_offset, _),
+            // to be conservative, consider all stack blocks with that offset in the function
+            mloc_sblk(mb_id, func_addr, lower, upper, lower_flag, upper_flag, _)
+        )
+    ),
+    lower_flag = TRUE,
+    upper_flag = TRUE,
+    stack_offset >= lower,
+    stack_offset < upper.
+tmp_reg_sblk_id(tmp_reg_id, mb_id) :-
+    tmp_reg_offset(tmp_reg_id, stack_offset),
+    set_tmp_reg_vex(addr, _, _, _, tmp_reg_id),
+    addr_func_instr(func_addr, addr),
+    (
+        ( // this tmp_reg only corresponds to specific call site stack block
+            tmp_reg_func_arg_passing(tmp_reg_id, _, stack_offset, call_site),
+            mloc_sblk(mb_id, func_addr, _, upper, lower_flag, upper_flag, call_site)
+        );
+        ( 
+            !tmp_reg_func_arg_passing(tmp_reg_id, _, stack_offset, _),
+            // to be conservative, consider all stack blocks with that offset in the function
+            mloc_sblk(mb_id, func_addr, _, upper, lower_flag, upper_flag, _)
+        )
+    ),
+    lower_flag = FALSE,
+    upper_flag = TRUE,
+    stack_offset < upper.
+tmp_reg_sblk_id(tmp_reg_id, mb_id) :-
+    tmp_reg_offset(tmp_reg_id, stack_offset),
+    set_tmp_reg_vex(addr, _, _, _, tmp_reg_id),
+    addr_func_instr(func_addr, addr),
+    (
+        ( // this tmp_reg only corresponds to specific call site stack block
+            tmp_reg_func_arg_passing(tmp_reg_id, _, stack_offset, call_site),
+            mloc_sblk(mb_id, func_addr, lower, _, lower_flag, upper_flag, call_site)
+        );
+        ( 
+            !tmp_reg_func_arg_passing(tmp_reg_id, _, stack_offset, _),
+            // to be conservative, consider all stack blocks with that offset in the function
+            mloc_sblk(mb_id, func_addr, lower, _, lower_flag, upper_flag, _)
+        )
+    ),
+    lower_flag = TRUE,
+    upper_flag = FALSE,
+    stack_offset >= lower.
+set_loc_vex_sblk_id(addr, order, size, eid, loc, mb_id) :-
+    set_loc_vex_offset(addr, order, size, eid, loc, stack_offset),
+    addr_func_instr(func_addr, addr),
+    mloc_sblk(mb_id, func_addr, lower, upper, lower_flag, upper_flag, _),
+    lower_flag = TRUE,
+    upper_flag = TRUE,
+    stack_offset >= lower,
+    stack_offset < upper.
+set_loc_vex_sblk_id(addr, order, size, eid, loc, mb_id) :-
+    set_loc_vex_offset(addr, order, size, eid, loc, stack_offset),
+    addr_func_instr(func_addr, addr),
+    mloc_sblk(mb_id, func_addr, _, upper, lower_flag, upper_flag, _),
+    lower_flag = FALSE,
+    upper_flag = TRUE,
+    stack_offset < upper.
+set_loc_vex_sblk_id(addr, order, size, eid, loc, mb_id) :-
+    set_loc_vex_offset(addr, order, size, eid, loc, stack_offset),
+    addr_func_instr(func_addr, addr),
+    mloc_sblk(mb_id, func_addr, lower, _, lower_flag, upper_flag, _),
+    lower_flag = TRUE,
+    upper_flag = FALSE,
+    stack_offset >= lower.
+get_loc_vex_exp_sblk_id(eid, loc, mb_id) :-
+    get_loc_vex_exp_offset(eid, loc, stack_offset),
+    set_tmp_reg_vex(addr, _, _, eid, _),
+    addr_func_instr(func_addr, addr),
+    mloc_sblk(mb_id, func_addr, lower, upper, lower_flag, upper_flag, _),
+    lower_flag = TRUE,
+    upper_flag = TRUE,
+    stack_offset >= lower,
+    stack_offset < upper.
+get_loc_vex_exp_sblk_id(eid, loc, mb_id) :-
+    get_loc_vex_exp_offset(eid, loc, stack_offset),
+    set_tmp_reg_vex(addr, _, _, eid, _),
+    addr_func_instr(func_addr, addr),
+    mloc_sblk(mb_id, func_addr, _, upper, lower_flag, upper_flag, _),
+    lower_flag = FALSE,
+    upper_flag = TRUE,
+    stack_offset < upper.
+get_loc_vex_exp_sblk_id(eid, loc, mb_id) :-
+    get_loc_vex_exp_offset(eid, loc, stack_offset),
+    set_tmp_reg_vex(addr, _, _, eid, _),
+    addr_func_instr(func_addr, addr),
+    mloc_sblk(mb_id, func_addr, lower, _, lower_flag, upper_flag, _),
+    lower_flag = TRUE,
+    upper_flag = FALSE,
+    stack_offset >= lower.

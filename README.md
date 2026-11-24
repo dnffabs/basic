@@ -1,8 +1,8 @@
 # BPA 基础实现
 
-当前实现 M1、M2 和 M3：M1 负责 ELF 加载、基础信息、符号、导入与依赖、重定位、PLT 和虚拟内存读取；M2 在 M1 的 `BinaryInfo` 上识别函数并构建初始控制流图；M3 按 M2 基本块提取 VEX 指令语义并生成 Datalog facts。
+当前已实现 M1–M4。M1 使用 CLE 加载 ELF，记录符号、导入、重定位与初始内存。M2 使用 angr CFGFast 恢复函数、基本块和初始控制流。M3 复用 M2 基本块提取 VEX facts。M4 用 Soufflé 和 Python 将栈、全局数据、堆分配点划分成块，并记录能够确定的内存访问归属。
 
-加载器使用 CLE 9.2.173，设置 `auto_load_libs=False`，执行 CLE 支持的重定位，不加载依赖库的真实代码。M2 使用 angr 9.2.173 的 `CFGFast` 恢复函数、基本块、机器指令和初始边。M3 复用这些块，不重跑 CFGFast；尚未生成对象内存块或指针分析结果。
+CLE 与 angr 版本均为 9.2.173。加载器使用 `auto_load_libs=False`，执行 CLE 支持的重定位。
 
 ## 运行
 
@@ -44,6 +44,15 @@ PYTHONPATH=src uv run --locked python -m bpa \
 ```
 
 通过 `--m1 binary.json --m2 cfg.json` 可以复用已有阶段文件。M3 的完整命令、关系说明、BPA-X 转换及验证范围见 [docs/M3.md](docs/M3.md)。
+
+运行到 M4 需要 PATH 中的 64 位 Soufflé 和 GNU objdump。以下命令直接复用上例的 M3 产物。省略 `--m3` 会从 ELF 开始运行。
+
+```bash
+PYTHONPATH=src uv run --locked python -m bpa tests/fixtures/binaries/test_64 \
+  --stage m4 --m3 outputs/m3/test_64/m3 -o outputs/test_64
+```
+
+M4 的入口是 `outputs/test_64/m4/manifest.json`，其中的 `facts_dir` 指向本次分块结果。分块规则、各列含义和 BPA-X 对照命令见 [docs/M4.md](docs/M4.md)。
 
 读取真实 bzip2 样本：
 
@@ -127,7 +136,7 @@ cfg = result.cfg_document()
 - `src/bpa/vex/`：M3 原始关系、VEX 提取与可选 BPA-X 投影；`read_facts()` 无需导入 angr 即可读取并校验 facts。
 - `src/bpa/pipeline.py`：`run_m2()`、`run_m3()` 编排阶段或复用已有 JSON，并写入任务目录。
 - `src/bpa/artifacts.py`：原子 JSON 写入与输入 ELF 覆盖保护。
-- `src/bpa/__main__.py`：`m1`/`m2`/`m3` 命令行入口及状态输出。
+- `src/bpa/__main__.py`：`m1`/`m2`/`m3`/`m4` 命令行入口及状态输出。
 
 `read_memory()` 读取重定位后的映射内存，包含 BSS 初始零值；它不会执行程序，也不会产生运行后的全局变量值。转换 `to_elf()` 只适用于主 ELF，不能用于外部占位地址。内存本身不嵌入 JSON；后续阶段需要字节时重新打开同一个 SHA256 的 ELF，并使用记录的加载策略和映射基址。旧 schema 1 输出需要重新生成。
 
@@ -139,6 +148,6 @@ cfg = result.cfg_document()
 PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 ```
 
-目前共 38 项自动测试：M1 11 项、M2 9 项、M3 18 项。M3 覆盖事实完整性、原始语义、调用效果、阶段复用及 PIE 重定位；PIE 专项复用同一份 C 源码在临时目录编译。`test_64`/`test_32` 的 M3 投影分别通过 BPA-X 的 19 项结构对照，脚本见 [tests/compare_m3_bpax.py](tests/compare_m3_bpax.py)。6 个 bzip2 样本的 M3 提取、产物完整性和 Souffle 读取检查也已通过；历史 M2 对照见 [tests/compare_m2_bpax.py](tests/compare_m2_bpax.py)。
+M1–M3 原有 38 项自动测试，M4 新增 6 项，覆盖分块结果、访问归属、阶段复用、输入校验与 PIE 基址变化。M3 覆盖事实完整性、原始语义、调用效果、阶段复用及 PIE 重定位；PIE 专项复用同一份 C 源码在临时目录编译。`test_64`/`test_32` 的 M3 投影分别通过 BPA-X 的 19 项结构对照，脚本见 [tests/compare_m3_bpax.py](tests/compare_m3_bpax.py)。6 个 bzip2 样本的 M3 提取、产物完整性和 Souffle 读取检查也已通过；历史 M2 对照见 [tests/compare_m2_bpax.py](tests/compare_m2_bpax.py)。
 
-各阶段实现过程、产物契约、验证记录及复现命令见 [docs/M1.md](docs/M1.md)、[docs/M2.md](docs/M2.md) 和 [docs/M3.md](docs/M3.md)。简单 C 程序及真实 facts 展示见 [examples/README.md](examples/README.md)。M3 当前完成固定小样本、临时 PIE 和 bzip2 六样本提取验证，尚未完成大型程序或 stripped 样本验收。
+各阶段实现过程、产物契约、验证记录及复现命令见 [docs/M1.md](docs/M1.md)、[docs/M2.md](docs/M2.md)、[docs/M3.md](docs/M3.md) 和 [docs/M4.md](docs/M4.md)。简单 C 程序及真实 facts 展示见 [examples/README.md](examples/README.md)。M3 当前完成固定小样本、临时 PIE 和 bzip2 六样本提取验证，尚未完成大型程序或 stripped 样本验收。

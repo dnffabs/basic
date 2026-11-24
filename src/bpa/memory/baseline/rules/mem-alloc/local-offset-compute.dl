@@ -1,0 +1,350 @@
+#include "../utils/types.dl"
+#include "../utils/regs.dl"
+
+
+.decl set_loc_vex(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc)
+.input set_loc_vex
+
+.decl get_loc_vex_exp(loc_eid: Exp, loc: Loc)
+.input get_loc_vex_exp
+
+.decl set_tmp_reg_vex(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.input set_tmp_reg_vex
+
+.decl get_tmp_reg_vex_exp(eid: Exp, size: Width, tmp_reg: TmpReg)
+.input get_tmp_reg_vex_exp
+
+.decl set_mem_vex(addr: Addr, order: Order, size: Width, val_eid: Exp, addr_eid: Exp)
+.input set_mem_vex
+
+.decl get_mem_vex_exp(eid: Exp, size: Width, addr_eid: Exp)
+.input get_mem_vex_exp
+
+.decl edge(from_addr: Addr, to_addr: Addr)
+.input edge
+
+.decl inter_succ(from_addr: Addr, to_addr: Addr)
+.input inter_succ
+
+.decl bb_addr_bound(start_addr: Addr, end_instr_addr: Addr)
+.input bb_addr_bound
+
+.decl bb_addr_bound_instr(bb_start_addr: Addr, instr_addr: Addr)
+.input bb_addr_bound_instr
+
+.decl addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_func
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+.decl addr_func_instr(func_addr: Addr, instr_addr: Addr)
+.input addr_func_instr
+
+.decl binop_dl_exp(eid: Exp, size: Width, op: symbol, arg1: Exp, arg2: Exp)
+.input binop_dl_exp
+
+.decl unop_vex_exp(eid: Exp, op: symbol, arg: Exp)
+.input unop_vex_exp
+
+.decl if_vex_exp(eid: Exp, cond_eid: Exp, true_eid: Exp, false_eid: Exp)
+.input if_vex_exp
+
+.decl imm_vex_exp(eid: Exp, size: Width, imm: unsigned)
+.input imm_vex_exp
+
+.decl first_bbs(bb_addr: Addr)
+.input first_bbs
+
+// intraprocedural CFG edges (excluding inter_succ edges)
+.decl edge_cfg_intra(from_bb_addr: Addr, to_bb_addr: Addr)
+.input edge_cfg_intra
+
+// intraprocedural CFG edges and inter_succ_cfg_edges (spanning tree)
+.decl edge_cfg_intra_w_inter_succ_spanning_tree(from_bb_addr: Addr, to_bb_addr: Addr)
+.input edge_cfg_intra_w_inter_succ_spanning_tree
+
+
+
+// The offset of registers at the beginning of each BB
+// For the root BB of a function, the values are 0 for esp/rsp
+.decl bb_reg_offset(bb_addr: Addr, loc: Loc, offset: number)
+.output bb_reg_offset(filename="bb_reg_offset.facts")
+
+// the set of regs with stack offset values
+.decl set_loc_vex_offset(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc, offset: number)
+.output set_loc_vex_offset(filename="set_loc_vex_offset.facts")
+
+// the stack offset values of temporary registers
+.decl tmp_reg_offset(tmp_reg_id: TmpReg, offset: number)
+.output tmp_reg_offset(filename="tmp_reg_offset.facts")
+
+// the get of regs with stack offset values
+.decl get_loc_vex_exp_offset(loc_eid: Exp, loc: Loc, offset: number)
+.output get_loc_vex_exp_offset(filename="get_loc_vex_exp_offset.facts")
+
+// the last definition of loc in a BB
+.decl bb_last_reg_def(bb_addr: Addr, def_addr: Addr, def_order: Order, loc: Loc)
+.output bb_last_reg_def(filename="bb_last_reg_def.facts")
+bb_last_reg_def(bb_addr, def_addr, def_order, loc) :-
+    bb_addr_bound_instr(bb_addr, def_addr),
+    REGS(loc),
+    def_addr = max addr :
+    {
+        bb_addr_bound_instr(bb_addr, addr),
+        set_loc_vex(addr, _, _, _, loc)
+    },
+    def_order = max order :
+    {
+        set_loc_vex(def_addr, order, _, _, loc)
+    }.
+
+// Case 1: root case
+bb_reg_offset(bb_addr, loc, 0) :-
+    SP_REG(loc),
+    first_bbs(bb_addr).
+
+.decl helper_inter_succ_cfg_edge(from_bb_addr: Addr, to_bb_addr: Addr)
+helper_inter_succ_cfg_edge(from_bb_addr, to_bb_addr) :-
+    inter_succ(last_instr_addr, to_bb_addr),
+    bb_addr_bound(from_bb_addr, last_instr_addr).
+
+// Case 2: the pred has assignment to registers
+bb_reg_offset(bb_addr, loc, offset) :-
+    // not root
+    bb_addr_bound(bb_addr, _),
+    !first_bbs(bb_addr),
+    (
+        (
+            CALLEE_SAVED_REGS(loc),
+            !SP_REG(loc), // exclude SP_REG (stack pointer is special)
+            edge_cfg_intra_w_inter_succ_spanning_tree(pred_bb_addr, bb_addr)
+        );
+        (
+            CALLER_SAVED_REGS(loc),
+            edge_cfg_intra_w_inter_succ_spanning_tree(pred_bb_addr, bb_addr),
+            !helper_inter_succ_cfg_edge(pred_bb_addr, bb_addr)
+        )
+    ),
+    // only consider the last assignment in pred_bb
+    bb_last_reg_def(pred_bb_addr, def_addr, def_order, loc),
+    // lookup the offset
+    set_loc_vex_offset(def_addr, def_order, _, _, loc, pred_offset),
+    offset = pred_offset.
+
+// Case 2 (special for SP_REG): the pred has assignment to registers
+bb_reg_offset(bb_addr, loc, offset) :-
+    // not root
+    bb_addr_bound(bb_addr, _),
+    !first_bbs(bb_addr),
+    SP_REG(loc),
+    edge_cfg_intra_w_inter_succ_spanning_tree(pred_bb_addr, bb_addr),
+    (
+        
+        (
+            // edge not over call sites
+            !helper_inter_succ_cfg_edge(pred_bb_addr, bb_addr),
+            offset = pred_offset
+        );
+        (
+            // edge over call sites (adjustment needed for call instruction)
+            helper_inter_succ_cfg_edge(pred_bb_addr, bb_addr),
+            #ifdef X86
+            offset = pred_offset + 4
+            #elif AMD64
+            offset = pred_offset + 8
+            #endif
+        )
+    ),
+    // only consider the last assignment in pred_bb
+    bb_last_reg_def(pred_bb_addr, def_addr, def_order, loc),
+    // lookup the offset
+    set_loc_vex_offset(def_addr, def_order, _, _, loc, pred_offset).
+
+// Case 3: the pred has no assignment to regs, it depends on bb_reg_offset of pred
+.decl helper_bb_has_def(bb_addr: Addr, loc: Loc)
+helper_bb_has_def(bb_addr, loc) :-
+    REGS(loc),
+    bb_addr_bound_instr(bb_addr, def_addr),
+    set_loc_vex(def_addr, _, _, _, loc).
+.decl helper_bb_has_no_def(bb_addr: Addr, loc: Loc)
+helper_bb_has_no_def(bb_addr, loc) :-
+    REGS(loc),
+    bb_addr_bound_instr(bb_addr, _),
+    !helper_bb_has_def(bb_addr, loc).
+bb_reg_offset(bb_addr, loc, offset) :-
+    bb_reg_offset(pred_bb_addr, loc, offset),
+    helper_bb_has_no_def(pred_bb_addr, loc),
+    (
+        (
+            CALLEE_SAVED_REGS(loc),
+            edge_cfg_intra_w_inter_succ_spanning_tree(pred_bb_addr, bb_addr)
+        );
+        (
+            CALLER_SAVED_REGS(loc),
+            edge_cfg_intra_w_inter_succ_spanning_tree(pred_bb_addr, bb_addr),
+            !helper_inter_succ_cfg_edge(pred_bb_addr, bb_addr)
+        )
+    ),
+    // not root
+    bb_addr_bound(bb_addr, _),
+    !first_bbs(bb_addr).
+
+
+// PUT(loc) in angr must come from a temporary register
+set_loc_vex_offset(addr, order, size, eid, loc, offset) :-
+    set_loc_vex(addr, order, size, eid, loc),
+    REGS(loc),
+    get_tmp_reg_vex_exp(eid, _, tmp_reg_id),
+    tmp_reg_offset(tmp_reg_id, offset).
+
+
+// Case 1.1: temporary register value comes from GET(loc)
+// t1 = GET(loc)
+tmp_reg_offset(tmp_reg_id, offset) :-
+    get_loc_vex_exp_offset(eid, loc, offset),
+    REGS(loc),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+// Case 1.2: temporary register value comes from another temporary register
+// t1 = t2
+tmp_reg_offset(tmp_reg_id, offset) :-
+    tmp_reg_offset(src_tmp_reg_id, offset),
+    get_tmp_reg_vex_exp(eid, _, src_tmp_reg_id),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+
+// Case 2: temporary register value comes from arith op
+// Case 2.1: t op imm
+tmp_reg_offset(tmp_reg_id, new_offset) :-
+    tmp_reg_offset(arg1_tmp_reg_id, offset),
+    get_tmp_reg_vex_exp(arg1_eid, _, arg1_tmp_reg_id),
+    binop_dl_exp(eid, width, op, arg1_eid, arg2_eid),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id),
+    imm_vex_exp(arg2_eid, width, imm),
+    imm_full = (to_number(imm) bshl (64 - as(width, number))) bshr (64 - as(width, number)),
+    (
+        (
+            op = "+",
+            new_offset = offset + imm_full
+        );
+        (
+            op = "-",
+            new_offset = offset - imm_full
+        );
+        (
+            op = "band",
+            new_offset = offset band imm_full
+        )
+    ).
+
+// Case 2.2: imm op t
+tmp_reg_offset(tmp_reg_id, new_offset) :-
+    tmp_reg_offset(arg2_tmp_reg_id, offset),
+    get_tmp_reg_vex_exp(arg2_eid, _, arg2_tmp_reg_id),
+    binop_dl_exp(eid, width, op, arg1_eid, arg2_eid),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id),
+    imm_vex_exp(arg1_eid, _, imm),
+    imm_full = (to_number(imm) bshl (64 - as(width, number))) bshr (64 - as(width, number)),
+    (
+        (
+            op = "+",
+            new_offset = offset + imm_full
+        );
+        (
+            op = "band",
+            new_offset = offset band imm_full
+        )
+    ).
+
+// Case 2.3: unop, binop, triop without constant offsets,
+// which do not change the stack offset
+// for unop (casting), we assume it does not change the offset
+tmp_reg_offset(tmp_reg_id, offset) :-
+    tmp_reg_offset(arg_tmp_reg_id, offset),
+    get_tmp_reg_vex_exp(arg_eid, _, arg_tmp_reg_id),
+    unop_vex_exp(eid, _, arg_eid),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+// for binary op, if both operands are non-constant,
+// we only propagate the case when t1 = t2 + t3 where t2 or t3 has known offset
+// since t2/t3 is probably a scaled index or similar
+tmp_reg_offset(tmp_reg_id, offset) :-
+    tmp_reg_offset(arg1_tmp_reg_id, offset), // t1 has stack offset
+    get_tmp_reg_vex_exp(arg1_eid, _, arg1_tmp_reg_id),
+    binop_dl_exp(eid, _, "+", arg1_eid, arg2_eid),
+    get_tmp_reg_vex_exp(arg2_eid, _, _),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+tmp_reg_offset(tmp_reg_id, offset) :-
+    tmp_reg_offset(arg2_tmp_reg_id, offset), // t2 has stack offset
+    get_tmp_reg_vex_exp(arg2_eid, _, arg2_tmp_reg_id),
+    binop_dl_exp(eid, _, "+", arg1_eid, arg2_eid),
+    get_tmp_reg_vex_exp(arg1_eid, _, _),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+// for triop (if), we assume true/false branches probably have the same offset
+// sanity checks are performed right after local memory block construction
+tmp_reg_offset(tmp_reg_id, offset) :-
+    tmp_reg_offset(true_tmp_reg_id, offset), // true branch has stack offset
+    get_tmp_reg_vex_exp(true_eid, _, true_tmp_reg_id),
+    if_vex_exp(eid, _, true_eid, false_eid),
+    get_tmp_reg_vex_exp(false_eid, _, _),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+// tmp_reg_offset(tmp_reg_id, offset) :-
+//     tmp_reg_offset(false_tmp_reg_id, offset), // false branch has stack offset
+//     get_tmp_reg_vex_exp(false_eid, _, false_tmp_reg_id),
+//     if_vex_exp(eid, _, true_eid, false_eid),
+//     get_tmp_reg_vex_exp(true_eid, _, _),
+//     set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+
+// Case 2.4: run-time stack allocation, sp - <non-constant>
+// alloca (also a C99 variable-length array) is `sub %reg,%esp`, and the size in
+// the register is only known at run time. Treat the size as 0: the stack pointer
+// keeps the offset it had before the allocation. Argument passing stays correct:
+// locals are accessed through the frame pointer, and sblk_arg_pass_conn only
+// compares a pushed argument's offset with the stack pointer offset at the call,
+// which are both off by the same size.
+// Match the subtraction (Sub32), not the write to esp (PUT(esp)): VEX removes
+// that write when a later instruction in the same block overwrites esp.
+// The value subtracted from must come from the stack pointer (sp_derived_tmp),
+// so subtracting a register from any other value (e.g., a frame pointer address)
+// still gives no offset. The value subtracted is not checked: one stack pointer
+// value minus another would also keep the offset.
+.decl sp_derived_tmp(tmp_reg_id: TmpReg)
+sp_derived_tmp(tmp_reg_id) :-
+    get_loc_vex_exp(eid, loc),
+    SP_REG(loc),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+// a stack pointer value plus or minus anything is a stack pointer value too:
+// VEX often reuses the temporary that holds esp from an earlier instruction in
+// the same block (a push, the stack cleanup after a call, an earlier allocation)
+// instead of reading esp again
+sp_derived_tmp(tmp_reg_id) :-
+    sp_derived_tmp(arg1_tmp_reg_id),
+    get_tmp_reg_vex_exp(arg1_eid, _, arg1_tmp_reg_id),
+    binop_dl_exp(eid, _, op, arg1_eid, _),
+    (op = "+"; op = "-"),
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+tmp_reg_offset(tmp_reg_id, offset) :-
+    sp_derived_tmp(arg1_tmp_reg_id),
+    tmp_reg_offset(arg1_tmp_reg_id, offset), // the value subtracted from has a stack offset
+    get_tmp_reg_vex_exp(arg1_eid, _, arg1_tmp_reg_id),
+    binop_dl_exp(eid, _, "-", arg1_eid, arg2_eid),
+    get_tmp_reg_vex_exp(arg2_eid, _, _), // the size is not a constant
+    set_tmp_reg_vex(_, _, _, eid, tmp_reg_id).
+
+
+// helper for finding the local definition of reg
+.decl last_def_before_use_local(def_addr: Addr, def_order: Order, use_addr: Addr, use_order: Order, loc: Loc)
+.input last_def_before_use_local
+// Case 1: the offset is not changed locally, and is copied from the start of BB
+get_loc_vex_exp_offset(loc_eid, loc, offset) :-
+    get_loc_vex_exp(loc_eid, loc),
+    REGS(loc),
+    set_tmp_reg_vex(use_addr, use_order, _, loc_eid, _),
+    !last_def_before_use_local(_, _, use_addr, use_order, loc),
+    bb_addr_bound_instr(bb_addr, use_addr),
+    bb_reg_offset(bb_addr, loc, offset).
+// Case 2: the offset is written/changed locally in current BB
+get_loc_vex_exp_offset(loc_eid, loc, offset) :-
+    get_loc_vex_exp(loc_eid, loc),
+    REGS(loc),
+    set_tmp_reg_vex(use_addr, use_order, _, loc_eid, _),
+    last_def_before_use_local(def_addr, def_order, use_addr, use_order, loc),
+    set_loc_vex_offset(def_addr, def_order, _, _, loc, offset).

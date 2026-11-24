@@ -1,0 +1,28 @@
+
+#include "../utils/types.dl"
+
+.decl addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_func
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+.decl jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.input jumps
+
+.decl heap_block(alloc_instr_addr: Addr)
+.output heap_block(filename="heap_block.facts")
+
+// malloc, calloc, and realloc
+.decl heap_alloc_func_addr(addr: Addr)
+heap_alloc_func_addr(start_addr) :-
+    addr_func("malloc", start_addr, _);
+    addr_func("calloc", start_addr, _);
+    addr_func("realloc", start_addr, _).
+
+heap_block(alloc_instr_addr) :-
+    jumps(alloc_instr_addr, "Call", "imm", target_addr),
+    heap_alloc_func_addr(target_addr),
+    user_defined_addr_func(_, lower, upper),
+    alloc_instr_addr >= lower,
+    alloc_instr_addr < upper.

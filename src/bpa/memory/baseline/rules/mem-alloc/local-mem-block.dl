@@ -1,0 +1,261 @@
+#include "local-offset-compute.dl"
+
+.decl local_block_boundary(addr: Addr, order: Order, func_name: FuncName, func_addr: Addr, offset: number)
+.output local_block_boundary(filename="local_block_boundary.facts")
+
+// Class 1: offset >= 0
+// Also emit offset+word_size as a companion boundary point (mirroring
+// Classes 4/5/6 below). When this is the highest observed offset, this
+// changes its block from "[offset, +inf)" to "[offset, offset+word_size)".
+// utils/mloc-gen.py still creates a new open-ended block. 
+local_block_boundary(addr, order, func_name, addr_lower, offset) :-
+  offset_candidate >= 0,
+  (
+    (
+        tmp_reg_offset(tmp_reg_id, offset_candidate),
+        set_tmp_reg_vex(addr, order, _, _, tmp_reg_id)
+    );
+    set_loc_vex_offset(addr, order, _, _, _, offset_candidate)
+  ),
+  (
+    offset = offset_candidate;
+    (
+      #ifdef X86
+      word_size = 4,
+      #elif AMD64
+      word_size = 8,
+      #endif
+      offset = offset_candidate + word_size
+    )
+  ),
+  user_defined_addr_func(func_name, addr_lower, addr_upper),
+  addr >= addr_lower,
+  addr < addr_upper.
+
+
+.decl lea_addr_reg(addr: Addr)
+.input lea_addr_reg
+
+// Class 2: offset < 0, and there is a move of this offset address to a register
+// e.g. lea -0x3c(%ebp),%eax
+local_block_boundary(addr, order, func_name, addr_lower, offset) :-
+    offset < 0,
+    (
+        set_loc_vex(addr, order, _, eid, _);
+        set_tmp_reg_vex(addr, order, _, eid, _)
+    ),
+    get_tmp_reg_vex_exp(eid, _, tmp_reg_id),
+    tmp_reg_offset(tmp_reg_id, offset),
+    lea_addr_reg(addr),
+    // off where --sblk dwarf takes the variable layout from DWARF (below)
+    !sblk_dwarf_func(addr_lower),
+    user_defined_addr_func(func_name, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+// --sblk dwarf, a baseline for comparison only (the analysis proper never reads
+// debug info, as only --gblk symtbl reads the symbol table):
+// utils/dwarf-local-vars.py lists the functions whose stack variables DWARF
+// describes in these offsets (sblk_dwarf_func) and each variable's stack slot
+// [offset, offset + size), size 0 when unknown (sblk_dwarf_var). In those
+// functions Class 2 is off and the ends of the slots are the variable-layout
+// boundaries, so stack slots DWARF does not describe (spills, temporaries) stay
+// merged between the variables. Classes 1 and 3-6 stay: utils/mloc-gen.py copies
+// a block per call site only when an argument store's offset is its lower
+// bound, postprocess.dl gives an argument temporary only that copy, and Classes
+// 5 and 6 put a boundary at every argument store (a push, or a store in the run
+// of argument slots from the call's stack pointer). Other functions keep Class
+// 2. With --sblk normal the driver writes both files empty.
+.decl sblk_dwarf_func(func_addr: Addr)
+.input sblk_dwarf_func
+.decl sblk_dwarf_var(func_addr: Addr, offset: number, size: number)
+.input sblk_dwarf_var
+
+local_block_boundary(func_addr, 0, func_name, func_addr, offset) :-
+    sblk_dwarf_func(func_addr),
+    sblk_dwarf_var(func_addr, var_offset, size),
+    user_defined_addr_func(func_name, func_addr, _),
+    (
+      offset = var_offset;
+      (
+        size > 0,
+        offset = var_offset + size
+      )
+    ).
+
+// Class 3: insert 0-offset for all functions to split locals and args
+local_block_boundary(addr, order, func_name, addr_lower, offset) :-
+  user_defined_addr_func(func_name, addr_lower, _),
+  addr = addr_lower,
+  order = 0,
+  offset = 0.
+
+
+// Class 4: insert 0-offset for all call sites to split caller's locals and args passed via stack
+.decl jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.input jumps
+// e.g. both offsets of t1 and t2 are added
+// t2 = Sub32(t1,0x4) // 0x4 is arch dependent
+// PUT(esp) = t2
+// STle(t2) = next instr addr after call returns
+local_block_boundary(addr, order, func_name, addr_lower, offset) :-
+  jumps(addr, "Call", _, _),
+  set_mem_vex(addr, order, _, _, addr_eid),
+  get_tmp_reg_vex_exp(addr_eid, _, tmp_reg_id),
+  tmp_reg_offset(tmp_reg_id, off),
+  (
+    offset = off;
+    (
+      #ifdef X86
+      word_size = 4,
+      #elif AMD64
+      word_size = 8,
+      #endif
+      offset = off + word_size
+    )
+  ),
+  user_defined_addr_func(func_name, addr_lower, addr_upper),
+  addr >= addr_lower,
+  addr < addr_upper.
+
+
+// Class 5: offset and offset+word_size in memory location of "push" instructions
+// they include function prologs and x86 function argument passing
+.decl push_instr_addr(addr: Addr)
+.input push_instr_addr
+
+local_block_boundary(addr, order, func_name, addr_lower, offset) :-
+    push_instr_addr(addr),
+    set_mem_vex(addr, order, _, _, addr_eid),
+    get_tmp_reg_vex_exp(addr_eid, _, tmp_reg_id),
+    tmp_reg_offset(tmp_reg_id, offset_candidate),
+    (
+      offset = offset_candidate;
+      (
+        #ifdef X86
+        word_size = 4,
+        #elif AMD64
+        word_size = 8,
+        #endif
+        offset = offset_candidate + word_size
+      )
+    ),
+    user_defined_addr_func(func_name, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+
+// Class 6: function argument passing 
+// they include x86 function argument passing via push and via direct stack writes
+.decl func_arg_pass_instr_addr(instr_addr: Addr, call_site: Addr, max_total_arg_size: number)
+.input func_arg_pass_instr_addr
+
+// helper for call site SP offset
+// e.g. it will include stack offset of t6 in the example of VEX IR of a func call
+// t2 = Sub32(t1,0x4) // 0x4 is arch dependent
+// PUT(esp) = t2
+// STle(t2) = next instr addr after call returns
+.decl helper_call_site_sp_offset(call_site: Addr, offset: number)
+helper_call_site_sp_offset(call_site, offset) :-
+    jumps(call_site, "Call", _, _),
+    set_loc_vex_offset(call_site, _, _, _, loc, off),
+    SP_REG(loc),
+    #ifdef X86
+    word_size = 4,
+    #elif AMD64
+    word_size = 8,
+    #endif
+    offset = off + word_size.
+
+// A reversed tail call is a jmp, so it never writes the stack pointer. Its
+// callee still sees arguments one word above the stack pointer, exactly like a
+// call, so take the last stack pointer write in the block, or the block entry
+// value when the block has none.
+.decl tc_sp_write_before(call_site: Addr, addr: Addr)
+tc_sp_write_before(call_site, addr) :-
+    jumps(call_site, "TC_Call", _, _),
+    bb_addr_bound_instr(bb_addr, call_site),
+    bb_addr_bound_instr(bb_addr, addr),
+    addr < call_site,
+    set_loc_vex_offset(addr, _, _, _, loc, _),
+    SP_REG(loc).
+
+.decl tc_sp_write_superseded(call_site: Addr, addr: Addr)
+tc_sp_write_superseded(call_site, addr) :-
+    tc_sp_write_before(call_site, addr),
+    tc_sp_write_before(call_site, later),
+    later > addr.
+
+helper_call_site_sp_offset(call_site, offset) :-
+    tc_sp_write_before(call_site, addr),
+    !tc_sp_write_superseded(call_site, addr),
+    set_loc_vex_offset(addr, _, _, _, loc, off),
+    SP_REG(loc),
+    #ifdef X86
+    word_size = 4,
+    #elif AMD64
+    word_size = 8,
+    #endif
+    offset = off + word_size.
+
+helper_call_site_sp_offset(call_site, offset) :-
+    jumps(call_site, "TC_Call", _, _),
+    !tc_sp_write_before(call_site, _),
+    bb_addr_bound_instr(bb_addr, call_site),
+    bb_reg_offset(bb_addr, loc, off),
+    SP_REG(loc),
+    #ifdef X86
+    word_size = 4,
+    #elif AMD64
+    word_size = 8,
+    #endif
+    offset = off + word_size.
+
+local_block_boundary(addr, order, func_name, addr_lower, offset) :-
+    func_arg_pass_instr_addr(addr, call_site, max_total_arg_size),
+    set_mem_vex(addr, order, _, _, addr_eid),
+    get_tmp_reg_vex_exp(addr_eid, _, tmp_reg_id),
+    tmp_reg_offset(tmp_reg_id, offset_candidate),
+    #ifdef X86
+    word_size = 4,
+    #elif AMD64
+    word_size = 8,
+    #endif
+    // ensure that the offset is within the max total arg size
+    helper_call_site_sp_offset(call_site, call_site_sp_offset),
+    offset_candidate >= call_site_sp_offset,
+    offset_candidate + word_size <= call_site_sp_offset + max_total_arg_size,
+    (
+      offset = offset_candidate; 
+      offset = offset_candidate + word_size;
+      offset = call_site_sp_offset + max_total_arg_size
+    ),
+    user_defined_addr_func(func_name, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+
+.decl tmp_reg_func_arg_passing(tmp_reg_id: TmpReg, func_addr: Addr, offset: number, call_site: Addr)
+.output tmp_reg_func_arg_passing(filename="tmp_reg_func_arg_passing.facts")
+
+// function argument passing via stack is lifted into VEX IR including:
+// Store(tmp_reg) = ...
+tmp_reg_func_arg_passing(tmp_reg_id, func_addr, offset, call_site) :-
+    func_arg_pass_instr_addr(addr, call_site, _),
+    set_mem_vex(addr, _, _, _, addr_eid),
+    get_tmp_reg_vex_exp(addr_eid, _, tmp_reg_id),
+    tmp_reg_offset(tmp_reg_id, offset),
+    addr_func_instr(func_addr, addr).
+
+// VEX exposes the implicit return-address push performed by Call as:
+//     t = esp/rsp - word_size; STle(t) = return_addr
+// The temporary t points to the stack slot that holds the return address; it
+// does not represent a semantic value passed to the callee. It is therefore
+// unrelated to argument/value passing and should not be included as
+// tmp_reg_func_arg_passing.
+// tmp_reg_func_arg_passing(tmp_reg_id, func_addr, offset, call_site) :-
+//     jumps(call_site, "Call", _, _),
+//     set_mem_vex(call_site, _, _, _, addr_eid),
+//     get_tmp_reg_vex_exp(addr_eid, _, tmp_reg_id),
+//     tmp_reg_offset(tmp_reg_id, offset),
+//     addr_func_instr(func_addr, call_site).

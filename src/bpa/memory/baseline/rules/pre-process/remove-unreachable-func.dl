@@ -1,0 +1,62 @@
+#include "../utils/types.dl"
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+.decl addr_AT_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_AT_func
+
+.decl addr_func_instr(func_addr: Addr, instr_addr: Addr)
+.input addr_func_instr
+
+.decl edge(from_addr: Addr, to_addr: Addr)
+.input edge
+
+// start from main function and all AT functions, remove unreachable functions
+.decl user_defined_reachable_func(name: FuncName, lower: Addr, upper: Addr)
+.output user_defined_reachable_func(filename="user_defined_reachable_func.facts")
+user_defined_reachable_func("main", lower, upper) :-
+    user_defined_addr_func("main", lower, upper).
+user_defined_reachable_func(name, lower, upper) :-
+    addr_AT_func(name, lower, upper).
+user_defined_reachable_func(callee_name, callee_lower, callee_upper) :-
+    user_defined_addr_func(callee_name, callee_lower, callee_upper),
+    edge(call_site, callee_lower),
+    addr_func_instr(caller_lower, call_site),
+    user_defined_reachable_func(_, caller_lower, _).
+
+
+
+.decl set_tmp_reg_vex(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.input set_tmp_reg_vex
+
+.decl set_loc_vex(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc)
+.input set_loc_vex
+
+.decl set_mem_vex(addr: Addr, order: Order, size: Width, val_eid: Exp, addr_eid: Exp)
+.input set_mem_vex
+
+
+.decl set_tmp_reg_vex_new(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.output set_tmp_reg_vex_new(filename="set_tmp_reg_vex.facts")
+set_tmp_reg_vex_new(addr, order, size, eid, tmp_reg) :-
+    set_tmp_reg_vex(addr, order, size, eid, tmp_reg),
+    user_defined_reachable_func(_, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+.decl set_loc_vex_new(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc)
+.output set_loc_vex_new(filename="set_loc_vex.facts")
+set_loc_vex_new(addr, order, size, eid, loc) :-
+    set_loc_vex(addr, order, size, eid, loc),
+    user_defined_reachable_func(_, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+.decl set_mem_vex_new(addr: Addr, order: Order, size: Width, val_eid: Exp, addr_eid: Exp)
+.output set_mem_vex_new(filename="set_mem_vex.facts")
+set_mem_vex_new(addr, order, size, val_eid, addr_eid) :-
+    set_mem_vex(addr, order, size, val_eid, addr_eid),
+    user_defined_reachable_func(_, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.

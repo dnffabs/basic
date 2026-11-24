@@ -1,0 +1,50 @@
+#include "../utils/types.dl"
+
+.decl addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_func
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+.decl edge(from_addr: Addr, to_addr: Addr)
+.input edge
+
+.decl jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.input jumps
+
+// Direct tail call: immediate jump whose target equals a function start.
+.decl tail_call_addr(addr: Addr)
+.output tail_call_addr(filename="tail_call_addr.facts")
+tail_call_addr(addr) :-
+    user_defined_addr_func(_, func_start, func_end),
+    addr >= func_start,
+    addr < func_end,
+    jumps(addr, "Jump", "imm", dest_val),
+    target = as(dest_val, Addr),
+    addr_func(_, target, _).
+
+// Indirect tail call. Keep this conservative: only unresolved tmp_reg jumps
+// are considered. Indexed memory jumps are emitted by the fact generator as
+// Jump_Table and are intentionally excluded here.
+tail_call_addr(addr) :-
+    user_defined_addr_func(_, func_start, func_end),
+    addr >= func_start,
+    addr < func_end,
+    jumps(addr, "Jump", "tmp_reg", _),
+    !edge(addr, _).
+
+// Overwrite jumps.facts. A reversed tail call has both a synthetic call and a
+// synthetic return marker at the original jump site.
+.decl modified_jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.output modified_jumps(filename="jumps.facts")
+
+modified_jumps(addr, "TC_Call", dest_type, dest_val) :-
+    tail_call_addr(addr),
+    jumps(addr, "Jump", dest_type, dest_val).
+
+modified_jumps(addr, "TC_Return", "tmp_reg", 0) :-
+    tail_call_addr(addr).
+
+modified_jumps(addr, jumpkind, dest_type, dest_val) :-
+    jumps(addr, jumpkind, dest_type, dest_val),
+    !tail_call_addr(addr).

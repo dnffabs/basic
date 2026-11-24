@@ -1,0 +1,59 @@
+#include "../utils/types.dl"
+
+.decl edge(from_addr: Addr, to_addr: Addr) // from_addr is the address of the last instruction in BB, not the end addr
+.input edge
+
+.decl inter_succ(from_addr: Addr, to_addr: Addr) // from_addr is the callsite instruction, to_addr is the address when the callee returns to
+.input inter_succ
+
+.decl bb_addr_bound(start_addr: Addr, end_instr_addr: Addr)
+.input bb_addr_bound
+
+.decl addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_func
+
+.decl addr_func_instr(func_addr: Addr, instr_addr: Addr)
+.input addr_func_instr
+
+.decl jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.input jumps
+
+// // intraprocedural edges
+// .decl edge_intra(from_addr: unsigned, to_addr: unsigned)
+// .output edge_intra(filename="edge_intra.facts")
+// edge_intra(from_addr, to_addr) :-
+//     edge(from_addr, to_addr),
+//     jumps(from_addr, jumpkind, _, _),
+//     jumpkind != "Ijk_Call",
+//     jumpkind != "Ijk_Ret",
+//     addr_func_instr(func_addr, from_addr),
+//     addr_func_instr(func_addr, to_addr).
+
+// intraprocedural CFG edges
+.decl edge_cfg_intra(from_bb_addr: Addr, to_bb_addr: Addr)
+.output edge_cfg_intra(filename="edge_cfg_intra.facts")
+edge_cfg_intra(from_bb_addr, to_bb_addr) :-
+    edge(last_instr_addr, to_bb_addr),
+    jumps(last_instr_addr, jumpkind, _, _),
+    jumpkind != "Call",
+    jumpkind != "Ret",
+    bb_addr_bound(from_bb_addr, last_instr_addr),
+    // from_bb_addr and to_bb_addr must be in the same function
+    addr_func_instr(func_addr, from_bb_addr),
+    addr_func_instr(func_addr, to_bb_addr).
+
+.decl edge_cfg_intra_w_inter_succ(from_bb_addr: Addr, to_bb_addr: Addr)
+.output edge_cfg_intra_w_inter_succ(filename="edge_cfg_intra_w_inter_succ.facts")
+edge_cfg_intra_w_inter_succ(from_bb_addr, to_bb_addr) :-
+    edge_cfg_intra(from_bb_addr, to_bb_addr).
+edge_cfg_intra_w_inter_succ(from_bb_addr, to_bb_addr) :-
+    inter_succ(last_instr_addr, to_bb_addr),
+    bb_addr_bound(from_bb_addr, last_instr_addr),
+    // from_bb_addr and to_bb_addr must be in the same function
+    addr_func_instr(func_addr, from_bb_addr),
+    addr_func_instr(func_addr, to_bb_addr).
+
+.decl first_bbs(bb_addr: Addr)
+.output first_bbs(filename="first_bbs.facts")
+first_bbs(bb_addr) :-
+    addr_func(_, bb_addr, _).

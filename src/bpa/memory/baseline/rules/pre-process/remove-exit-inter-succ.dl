@@ -1,0 +1,75 @@
+//
+//inter_succ with "exit" shouldn't be considered
+//In other words, functions that definitely terminate the program will not return to the caller address
+//e.g:
+//addr_func(exit, 800, _)
+//edge(1000, 800)
+//inter_succ(1000, 1005) <-- this fact should be removed.
+
+#include "../utils/types.dl"
+
+.decl addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_func
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+.decl edge(addr: Addr, addr_succ: Addr)
+.input edge
+
+.decl jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.input jumps
+
+
+.decl inter_succ(addr: Addr, addr_inter_succ: Addr)
+.input inter_succ
+
+// the inter_succ edge which covers an exit function
+.decl inter_succ_exit(addr: Addr, addr_inter_succ: Addr)
+// .output inter_succ_exit(filename="inter_succ_exit.facts")
+
+// Case 1: explicit exit functions
+// name of functions which always end the program
+.decl EXIT_FUNC(name: FuncName)
+EXIT_FUNC("exit").
+EXIT_FUNC("_exit").
+EXIT_FUNC("__assert_fail").
+
+inter_succ_exit(addr, addr_inter_succ) :-
+  addr_func(exit_func_name, addr_exit, _),
+  EXIT_FUNC(exit_func_name),
+  inter_succ(addr, addr_inter_succ),
+  edge(addr, addr_exit).
+
+// Case 2: functions without returns
+.decl func_with_ret(func: FuncName)
+func_with_ret(func) :-
+  addr_func(func, addr_lower, addr_upper),
+  jumps(addr_return, "Ret", _, _),
+  addr_lower <= addr_return,
+  addr_return < addr_upper.
+func_with_ret(func) :-
+  addr_func(func, addr_lower, addr_upper),
+  jumps(addr_return, "TC_Return", _, _),
+  addr_lower <= addr_return,
+  addr_return < addr_upper.
+
+// TODO: confirm whether exit wrapper functions really have no returns in all scenarios
+.decl exit_wrapper(func: FuncName, addr: Addr)
+// .output exit_wrapper(filename="exit_wrapper.facts")
+exit_wrapper(func, addr) :-
+  user_defined_addr_func(func, addr, _),
+  !func_with_ret(func).
+
+inter_succ_exit(addr, addr_inter_succ) :-
+  exit_wrapper(_, addr_exit),
+  inter_succ(addr, addr_inter_succ),
+  edge(addr, addr_exit).
+
+// Write back the filtered inter_succ facts
+.decl inter_succ_new(addr: Addr, addr_inter_succ: Addr)
+.output inter_succ_new(filename="inter_succ.facts") // overwrite the original inter_succ facts
+
+inter_succ_new(addr, addr_inter_succ) :-
+  inter_succ(addr, addr_inter_succ),
+  !inter_succ_exit(addr, addr_inter_succ).

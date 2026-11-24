@@ -1,0 +1,17 @@
+#include "../utils/types.dl"
+
+.decl addr_func(func_name: FuncName, start_addr: Addr, end_addr: Addr)
+.input addr_func
+
+.decl bb_addr_bound_instr(bb_start_addr: Addr, instr_addr: Addr)
+.input bb_addr_bound_instr
+
+.decl addr_func_instr(func_addr: Addr, instr_addr: Addr)
+.output addr_func_instr(filename="addr_func_instr.facts")
+
+// Map instruction addresses to their containing functions
+addr_func_instr(start, addr) :-
+    bb_addr_bound_instr(_, addr),
+    addr_func(_, start, end),
+    addr >= start,
+    addr < end.

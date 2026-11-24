@@ -1,0 +1,225 @@
+#include "../utils/types.dl"
+
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+
+// instruction and expression related
+.decl set_tmp_reg_vex(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.input set_tmp_reg_vex
+
+.decl set_loc_vex(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc)
+.input set_loc_vex
+
+.decl set_mem_vex(addr: Addr, order: Order, size: Width, val_eid: Exp, addr_eid: Exp)
+.input set_mem_vex
+
+// .decl get_tmp_reg_vex_exp(eid: Exp, size: number, tmp_reg: TmpReg)
+// .input get_tmp_reg_vex_exp
+
+// .decl get_loc_vex_exp(eid: Exp, loc: Loc)
+// .input get_loc_vex_exp
+
+// .decl get_mem_vex_exp(eid: Exp, size: number, addr_eid: Exp)
+// .input get_mem_vex_exp
+
+// .decl imm_vex_exp(eid: Exp, size: number, imm: unsigned)
+// .input imm_vex_exp
+
+// .decl unop_vex_exp(eid: Exp, size: number, op: symbol, arg: Exp)
+// .input unop_vex_exp
+
+// .decl binop_vex_exp(eid: Exp, size: number, op: symbol, arg1: Exp, arg2: Exp)
+// .input binop_vex_exp
+
+// .decl if_vex_exp(eid: Exp, cond_eid: Exp, true_eid: Exp, false_eid: Exp)
+// .input if_vex_exp
+
+
+
+// control flow related
+.decl edge(from_addr: Addr, to_addr: Addr)
+.input edge
+
+.decl inter_succ(from_addr: Addr, to_addr: Addr)
+.input inter_succ
+
+.decl jumps(addr: Addr, jumpkind: symbol, dest_type: symbol, dest_val: unsigned)
+.input jumps
+
+
+// only keep the facts related to user-defined functions
+
+.decl set_tmp_reg_vex_new(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.output set_tmp_reg_vex_new(filename="set_tmp_reg_vex.facts")
+set_tmp_reg_vex_new(addr, order, size, eid, tmp_reg) :-
+    set_tmp_reg_vex(addr, order, size, eid, tmp_reg),
+    user_defined_addr_func(_, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+.decl set_loc_vex_new(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc)
+.output set_loc_vex_new(filename="set_loc_vex.facts")
+set_loc_vex_new(addr, order, size, eid, loc) :-
+    set_loc_vex(addr, order, size, eid, loc),
+    user_defined_addr_func(_, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+.decl set_mem_vex_new(addr: Addr, order: Order, size: Width, val_eid: Exp, addr_eid: Exp)
+.output set_mem_vex_new(filename="set_mem_vex.facts")
+set_mem_vex_new(addr, order, size, val_eid, addr_eid) :-
+    set_mem_vex(addr, order, size, val_eid, addr_eid),
+    user_defined_addr_func(_, addr_lower, addr_upper),
+    addr >= addr_lower,
+    addr < addr_upper.
+
+
+.decl edge_new(from_addr: Addr, to_addr: Addr)
+.output edge_new(filename="edge.facts")
+edge_new(from_addr, to_addr) :-
+    edge(from_addr, to_addr),
+    user_defined_addr_func(_, from_addr_lower, from_addr_upper),
+    from_addr >= from_addr_lower,
+    from_addr < from_addr_upper,
+    user_defined_addr_func(_, to_addr_lower, to_addr_upper),
+    to_addr >= to_addr_lower,
+    to_addr < to_addr_upper.
+
+.decl inter_succ_new(from_addr: Addr, to_addr: Addr)
+.output inter_succ_new(filename="inter_succ.facts")
+inter_succ_new(from_addr, to_addr) :-
+    inter_succ(from_addr, to_addr),
+    user_defined_addr_func(_, addr_lower, addr_upper),
+    from_addr >= addr_lower,
+    from_addr < addr_upper,
+    to_addr >= addr_lower,
+    to_addr < addr_upper.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+// .decl set_loc_vex(addr:number, order:number, size:number, e:Exp, l:Loc)
+// .decl set_tmp_reg_vex(addr:number, order:number, size:number, e:Exp, tmp_reg:TmpReg)
+// .decl set_array_vex(addr:number, order:number, size:number, e:Exp, arr:Array, index:number, bias:number)
+// .decl set_mem_vex(addr:number, order:number, size:number, e:Exp, addr_store:Exp)
+// .decl exit_vex(addr:number, order:number, cond:Exp, target:Exp)
+// .decl trap_vex(addr:number, order:number)
+// .decl error_vex(addr:number, order:number)
+// .input set_loc_vex, set_tmp_reg_vex, set_array_vex, set_mem_vex, exit_vex, trap_vex, error_vex
+
+// .decl flow(addr:number, addr_next:number)
+// .input flow
+
+// .decl edge(addr:number, addr_next:number)
+// .input edge
+
+// .decl no_op_instr(addr:number)
+// no_op_instr(addr) :-
+//   (flow(_, addr);
+//    flow(addr, _);
+//    edge(_, addr);
+//    edge(addr, _) ),
+//   !set_loc_vex(addr, _, _, _, _),
+//   !set_tmp_reg_vex(addr, _, _, _, _),
+//   !set_array_vex(addr, _, _, _, _, _, _),
+//   !set_mem_vex(addr, _, _, _, _),
+//   !exit_vex(addr, _, _, _),
+//   !trap_vex(addr, _),
+//   !error_vex(addr, _).
+
+// .decl no_op_instr_previous_valid_addr_by_flow(addr_valid:number, noop_addr:number)
+// .decl no_op_instr_previous_valid_addr_by_edge(addr_valid:number, noop_addr:number)
+// .decl no_op_instr_previous_valid_addr(addr_valid:number, noop_addr:number)
+
+// no_op_instr_previous_valid_addr_by_flow(addr_valid, noop_addr) :-
+//   flow(addr_valid, noop_addr),
+//   no_op_instr(noop_addr).
+
+// no_op_instr_previous_valid_addr_by_edge(addr_valid, noop_addr) :-
+//   edge(addr_valid, noop_addr),
+//   no_op_instr(noop_addr).
+
+// no_op_instr_previous_valid_addr(addr_valid, noop_addr) :-
+//   no_op_instr_previous_valid_addr_by_edge(addr_valid, noop_addr);
+//   no_op_instr_previous_valid_addr_by_flow(addr_valid, noop_addr).
+
+
+
+// .decl no_op_instr_next_preprocess(noop_addr:number, addr_next:number)
+// .decl no_op_instr_next_addr(noop_addr:number, addr_next:number)
+
+// // consecutive nops
+// no_op_instr_next_preprocess(noop_addr, addr_next) :-
+//   no_op_instr(noop_addr),
+//   no_op_instr(addr_next),
+//   (flow(noop_addr, addr_next);
+//    edge(noop_addr, addr_next)).
+
+// no_op_instr_next_preprocess(noop_addr, addr_next) :-
+//   no_op_instr(addr_next),
+//   no_op_instr_next_preprocess(noop_addr, addr),
+//   (flow(addr, addr_next);
+//    edge(addr, addr_next)).
+
+// // next real instr
+// no_op_instr_next_addr(noop_addr, addr_next) :-
+//   no_op_instr(noop_addr),
+//   !no_op_instr(addr_next),
+//   (flow(noop_addr, addr_next);
+//    edge(noop_addr, addr_next)).
+
+// no_op_instr_next_addr(noop_addr, addr_next) :-
+//   no_op_instr_next_preprocess(noop_addr, addr),
+//   !no_op_instr(addr_next),
+//   (flow(addr, addr_next);
+//    edge(addr, addr_next)).
+
+
+// .decl flow_added(addr:number, addr_next:number)
+// .decl edge_added(addr:number, addr_next:number)
+
+// .decl bb_addr_bound(addr_lower:number, addr_upper:number)
+// .input bb_addr_bound
+
+// flow_added(addr_valid, addr_next) :-
+//   no_op_instr_previous_valid_addr(addr_valid, noop_addr),
+//   no_op_instr_next_addr(noop_addr, addr_next),
+//   bb_addr_bound(addr_lower, addr_upper),
+//   addr_lower <= addr_valid,
+//   addr_valid <= addr_upper,
+//   addr_lower <= addr_next,
+//   addr_next <= addr_upper.
+
+// edge_added(addr_valid, addr_next) :-
+//   no_op_instr_previous_valid_addr(addr_valid, noop_addr),
+//   no_op_instr_next_addr(noop_addr, addr_next),
+//   !flow_added(addr_valid, addr_next).
+
+// //add back the normal ones
+// flow_added(addr, addr_next) :-
+//   flow(addr, addr_next),
+//   !no_op_instr(addr_next).
+// edge_added(addr, addr_next) :-
+//   edge(addr, addr_next),
+//   !no_op_instr(addr_next).
+
+// .output flow_added(filename="flow.facts")
+// .output edge_added(filename="edge.facts")
+
+
+

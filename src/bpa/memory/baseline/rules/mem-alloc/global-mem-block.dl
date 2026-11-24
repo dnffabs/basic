@@ -1,0 +1,159 @@
+
+#include "../utils/types.dl"
+
+.decl set_mem_vex(addr: Addr, order: Order, size: Width, val_eid: Exp, addr_eid: Exp)
+.input set_mem_vex
+
+.decl get_mem_vex_exp(eid: Exp, size: Width, addr_eid: Exp)
+.input get_mem_vex_exp
+
+.decl set_tmp_reg_vex(addr: Addr, order: Order, size: Width, eid: Exp, tmp_reg: TmpReg)
+.input set_tmp_reg_vex
+
+.decl get_tmp_reg_vex_exp(eid: Exp, size: Width, tid: TmpReg)
+.input get_tmp_reg_vex_exp
+
+.decl set_loc_vex(addr: Addr, order: Order, size: Width, eid: Exp, loc: Loc)
+.input set_loc_vex
+
+.decl imm_vex_exp(eid: Exp, size: Width, imm: unsigned)
+.input imm_vex_exp
+
+.decl binop_dl_exp(eid: Exp, size: Width, op: symbol, arg1: Exp, arg2: Exp)
+.input binop_dl_exp
+
+.decl addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input addr_func
+
+.decl user_defined_addr_func(name: FuncName, lower: Addr, upper: Addr)
+.input user_defined_addr_func
+
+.decl addr_func_instr(func_addr: Addr, instr_addr: Addr)
+.input addr_func_instr
+
+.decl global_rgn(name: symbol, start_addr: Addr, end_addr: Addr)
+.input global_rgn
+
+.decl global_block_boundary(addr: Addr, global_addr: Addr)
+.output global_block_boundary(filename="global_block_boundary.facts")
+
+.decl global_block_boundary_candidate(addr: Addr, global_addr: Addr, size: number)
+
+.decl global_block_boundary_overlapped(global_addr: Addr)
+
+// Coarser global blocks: boundaries only at the base address of an indexed
+// global access (Class 4 below). A coarser block therefore spans a whole
+// indexed object, so a base immediate can read past the sub-block that the
+// base address happens to fall in. Only consumed when mloc-gen.py runs in
+// "coarser" mode.
+.decl global_coarser_boundary_candidate(global_addr: Addr)
+
+.decl global_coarser_boundary(global_addr: Addr)
+.output global_coarser_boundary(filename="global_coarser_boundary.facts")
+
+global_block_boundary(addr, global_addr) :-
+    global_block_boundary_candidate(addr, global_addr, _),
+    !global_block_boundary_overlapped(global_addr).
+
+// A coarser boundary is also a fine boundary: an eliminated address is not a
+// block start in either tier.
+global_coarser_boundary(global_addr) :-
+    global_coarser_boundary_candidate(global_addr),
+    !global_block_boundary_overlapped(global_addr).
+
+global_block_boundary_overlapped(global_addr) :-
+    global_block_boundary_candidate(_, global_addr, _),
+    global_block_boundary_candidate(_, other_global_addr, other_size),
+    other_global_addr < global_addr,
+    other_global_addr + to_unsigned(other_size) > global_addr.
+
+// Class 1: t1 = Mem[imm] or Mem[imm] = t1
+global_block_boundary_candidate(addr, global_addr, 0) :-
+    (
+      set_mem_vex(addr, _, _, _, imm_eid);
+      (
+        set_tmp_reg_vex(addr, _, _, load_eid, _),
+        get_mem_vex_exp(load_eid, _, imm_eid)
+      )
+    ),
+    imm_vex_exp(imm_eid, _, global_addr),
+    global_rgn(_, start_addr, end_addr),
+    global_addr >= start_addr,
+    global_addr <= end_addr,
+    user_defined_addr_func(_, func_addr, _),
+    addr_func_instr(func_addr, addr).
+
+// Class 2: Mem[t1] = imm or %eax = imm
+global_block_boundary_candidate(addr, global_addr, 0) :-
+    (
+      set_mem_vex(addr, _, _, imm_eid, _);
+      set_loc_vex(addr, _, _, imm_eid, _)
+    ),
+    imm_vex_exp(imm_eid, _, global_addr),
+    global_rgn(_, start_addr, end_addr),
+    global_addr >= start_addr,
+    global_addr <= end_addr,
+    user_defined_addr_func(_, func_addr, _),
+    addr_func_instr(func_addr, addr).
+
+// Class 3: addr + r
+global_block_boundary_candidate(addr, global_addr, 0) :-
+    set_tmp_reg_vex(addr, _, _, t1_eid, _),
+    (
+      binop_dl_exp(t1_eid, _, op, _, imm_eid);
+      binop_dl_exp(t1_eid, _, op, imm_eid, _)
+    ),
+    (op = "+"; op = "-"),
+    imm_vex_exp(imm_eid, _, global_addr),
+    global_rgn(_, start_addr, end_addr),
+    global_addr >= start_addr,
+    global_addr <= end_addr,
+    user_defined_addr_func(_, func_addr, _),
+    addr_func_instr(func_addr, addr).
+
+// Class 4: addr + r * scale + …
+// size is two strides from the base: 2 * scale for "*", 2 * (1 bshl s) for
+// "bshl" (stride 1 << s). Strides are bounded by 0x10000, so a high-bit "*"
+// constant (a negative stride) cannot suppress every later candidate; such a
+// base is still a Class 3 boundary.
+global_coarser_boundary_candidate(global_addr),
+global_block_boundary_candidate(addr, global_addr, size) :-
+    set_tmp_reg_vex(_, _, _, t1_eid, t1_id),
+    (
+        (
+            binop_dl_exp(t1_eid, _, "*", _, scale_eid),
+            imm_vex_exp(scale_eid, _, scale),
+            scale > 0, scale < 0x10000,
+            size = to_number(2 * scale)
+        );
+        (
+            binop_dl_exp(t1_eid, _, "*", scale_eid, _),
+            imm_vex_exp(scale_eid, _, scale),
+            scale > 0, scale < 0x10000,
+            size = to_number(2 * scale)
+        );
+        (
+            binop_dl_exp(t1_eid, _, "bshl", _, scale_eid),
+            imm_vex_exp(scale_eid, _, scale),
+            scale < 16,
+            size = to_number(2 * (1 bshl scale))
+        )
+    ),
+    set_tmp_reg_vex(addr, _, _, t3_eid, _),
+    (
+      binop_dl_exp(t3_eid, _, "+", t1_get_eid, global_addr_eid);
+      binop_dl_exp(t3_eid, _, "+", global_addr_eid, t1_get_eid)
+    ),
+    get_tmp_reg_vex_exp(t1_get_eid, _, t1_id),
+    imm_vex_exp(global_addr_eid, _, global_addr),
+    global_rgn(_, start_addr, end_addr),
+    global_addr >= start_addr,
+    global_addr <= end_addr,
+    user_defined_addr_func(_, func_addr, _),
+    addr_func_instr(func_addr, addr).
+
+
+.decl global_chunk_boundary(addr: Addr, global_addr: Addr)
+.output global_chunk_boundary(filename="global_chunk_boundary.facts")
+global_chunk_boundary(addr, global_addr) :-
+    global_block_boundary_candidate(addr, global_addr, _).

@@ -1,0 +1,30 @@
+#define TRUE 1
+#define FALSE 0
+
+#define TYPE_TMP_REG 0
+#define TYPE_LOC 1
+#define TYPE_LOCAL_MEMB 2
+#define TYPE_GLOBAL_MEMB 3
+#define TYPE_HEAP_MEMB 4
+#define TYPE_FUNC 5
+
+.type Bool <: unsigned
+
+.type Addr <: unsigned              // address in the binary (for instructions, BBs, functions, etc.)
+.type Order <: number               // order of sub-instruction within an address, may used 0 or negative numbers for special purposes
+.type Width <: unsigned             // width in bits
+.type Exp <: unsigned               // expression ID in VEX IR
+
+.type TmpReg <: symbol               // temporary register in VEX IR: string {BB addr}_{temporary register local id}
+
+.type Loc <: symbol                 // native register name
+.type LocSSA <: unsigned            // SSA-index for register, always used together with Loc
+
+.type Array = symbol                // (register array not supported yet)
+
+.type FuncName <: symbol            // function name string
+
+.type MemBlkID <: unsigned          // ID for memory blocks, always used together with type of memory block
+
+.type ObjectType <: unsigned        // type of object: values are defined by TYPE_*
+

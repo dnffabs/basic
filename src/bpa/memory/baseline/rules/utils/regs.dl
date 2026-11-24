@@ -1,0 +1,95 @@
+
+// All registers we are interested in
+.decl REGS(loc: Loc)
+#ifdef X86
+REGS("eax").
+REGS("ecx").
+REGS("edx").
+REGS("ebx").
+REGS("esi").
+REGS("edi").
+REGS("ebp").
+REGS("esp").
+#elif AMD64
+REGS("rax").
+REGS("rcx").
+REGS("rdx").
+REGS("rsi").
+REGS("rdi").
+REGS("r8").
+REGS("r9").
+REGS("r10").
+REGS("r11").
+REGS("rbx").
+REGS("rbp").
+REGS("rsp").
+REGS("r12").
+REGS("r13").
+REGS("r14").
+REGS("r15").
+#endif
+
+
+// voliatile registers: changed in callee
+.decl CALLER_SAVED_REGS(loc: Loc)
+
+// non-voliatile registers: preserved in callee
+.decl CALLEE_SAVED_REGS(loc: Loc)
+
+// The following registers are used in angr's convention
+// It might not reflect the real registers used in the binary
+// e.g. "ax" in the binary is lifted to "eax" by angr X86 lifter
+#ifdef X86
+CALLER_SAVED_REGS("eax").
+CALLER_SAVED_REGS("ecx").
+CALLER_SAVED_REGS("edx").
+
+CALLEE_SAVED_REGS("ebx").
+CALLEE_SAVED_REGS("esi").
+CALLEE_SAVED_REGS("edi").
+CALLEE_SAVED_REGS("ebp").
+CALLEE_SAVED_REGS("esp").
+
+#elif AMD64
+CALLER_SAVED_REGS("rax").
+CALLER_SAVED_REGS("rcx").
+CALLER_SAVED_REGS("rdx").
+CALLER_SAVED_REGS("rsi").
+CALLER_SAVED_REGS("rdi").
+CALLER_SAVED_REGS("r8").
+CALLER_SAVED_REGS("r9").
+CALLER_SAVED_REGS("r10").
+CALLER_SAVED_REGS("r11").
+
+CALLEE_SAVED_REGS("rbx").
+CALLEE_SAVED_REGS("rbp").
+CALLEE_SAVED_REGS("rsp").
+CALLEE_SAVED_REGS("r12").
+CALLEE_SAVED_REGS("r13").
+CALLEE_SAVED_REGS("r14").
+CALLEE_SAVED_REGS("r15").
+#endif
+
+
+.decl SP_BP_REG(loc: Loc)
+#ifdef X86
+SP_BP_REG("esp").
+SP_BP_REG("ebp").
+#elif AMD64
+SP_BP_REG("rsp").
+SP_BP_REG("rbp").
+#endif
+
+.decl SP_REG(loc: Loc)
+#ifdef X86
+SP_REG("esp").
+#elif AMD64
+SP_REG("rsp").
+#endif
+
+.decl BP_REG(loc: Loc)
+#ifdef X86
+BP_REG("ebp").
+#elif AMD64
+BP_REG("rbp").
+#endif
