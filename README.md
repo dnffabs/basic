@@ -1,8 +1,8 @@
 # BPA 基础实现
 
-当前实现 M1 和 M2：M1 负责 ELF 加载、基础信息、符号、导入与依赖、重定位、PLT 和虚拟内存读取；M2 在 M1 的 `BinaryInfo` 上识别函数并构建初始控制流图。
+当前实现 M1、M2 和 M3：M1 负责 ELF 加载、基础信息、符号、导入与依赖、重定位、PLT 和虚拟内存读取；M2 在 M1 的 `BinaryInfo` 上识别函数并构建初始控制流图；M3 按 M2 基本块提取 VEX 指令语义并生成 Datalog facts。
 
-加载器使用与本机 BPA-X 一致的 CLE 9.2.173，设置 `auto_load_libs=False`，执行 CLE 支持的重定位，不加载依赖库的真实代码。M2 使用 angr 9.2.173 的 `CFGFast` 恢复函数、基本块、机器指令和初始边。尚未生成 VEX facts、对象内存块或指针分析结果。
+加载器使用 CLE 9.2.173，设置 `auto_load_libs=False`，执行 CLE 支持的重定位，不加载依赖库的真实代码。M2 使用 angr 9.2.173 的 `CFGFast` 恢复函数、基本块、机器指令和初始边。M3 复用这些块，不重跑 CFGFast；尚未生成对象内存块或指针分析结果。
 
 ## 运行
 
@@ -34,7 +34,16 @@ PYTHONPATH=src uv run --locked python -m bpa \
   --m1 outputs/test_64/m1/binary.json -o outputs/test_64
 ```
 
-`--stage` 默认为 `m1`，此时 `-o` 仍表示单个 JSON 文件；`--m1` 只能与 `--stage m2` 一起使用。
+`--stage` 默认为 `m1`，此时 `-o` 仍表示单个 JSON 文件；`--m1` 可与 `--stage m2` 或 `--stage m3` 使用。
+
+运行到 M3，生成 M1/M2 文件和 `m3/*.facts`、schema、manifest：
+
+```bash
+PYTHONPATH=src uv run --locked python -m bpa \
+  tests/fixtures/binaries/test_64 --stage m3 -o outputs/m3/test_64
+```
+
+通过 `--m1 binary.json --m2 cfg.json` 可以复用已有阶段文件。M3 的完整命令、关系说明、BPA-X 转换及验证范围见 [docs/M3.md](docs/M3.md)。
 
 读取真实 bzip2 样本：
 
@@ -115,20 +124,21 @@ cfg = result.cfg_document()
 - `src/bpa/model/binary.py`：独立数据模型，不依赖 pyelftools、CLE 或 angr，支持 JSON 字典往返。
 - `src/bpa/cfg/builder.py`：`build_cfg(info)` 校验 M1 契约、重建私有 angr 项目并恢复函数/块/边/转移；失败抛出 `CFGError`。
 - `src/bpa/model/cfg.py`：M2 独立数据模型及 `functions.json`/`cfg.json` 文档生成。
-- `src/bpa/pipeline.py`：`run_m2(binary, output, m1_path=None, mapped_base=None)` 编排 M1→M2 并写入任务目录。
+- `src/bpa/vex/`：M3 原始关系、VEX 提取与可选 BPA-X 投影；`read_facts()` 无需导入 angr 即可读取并校验 facts。
+- `src/bpa/pipeline.py`：`run_m2()`、`run_m3()` 编排阶段或复用已有 JSON，并写入任务目录。
 - `src/bpa/artifacts.py`：原子 JSON 写入与输入 ELF 覆盖保护。
-- `src/bpa/__main__.py`：`m1`/`m2` 命令行入口及 JSON 输出。
+- `src/bpa/__main__.py`：`m1`/`m2`/`m3` 命令行入口及状态输出。
 
 `read_memory()` 读取重定位后的映射内存，包含 BSS 初始零值；它不会执行程序，也不会产生运行后的全局变量值。转换 `to_elf()` 只适用于主 ELF，不能用于外部占位地址。内存本身不嵌入 JSON；后续阶段需要字节时重新打开同一个 SHA256 的 ELF，并使用记录的加载策略和映射基址。旧 schema 1 输出需要重新生成。
 
 ## 基本验证
 
-固定测试集使用 `tests/fixtures/binaries/`；二进制、外部样本软链接及生成的 `manifest.json` 不纳入 Git。首次使用或需要重建时执行 `bash tests/fixtures/build.sh`，日常测试不重编译。源码、GCC 编译选项和清单说明见 [tests/README.md](tests/README.md)。
+固定测试集使用 `tests/fixtures/binaries/`；二进制、外部样本软链接及生成的 `manifest.json` 不纳入 Git。首次使用或需要重建时执行 `bash tests/fixtures/build.sh`，日常测试不重建固定样本；M3 的 PIE 专项仅在临时目录编译。源码、GCC 编译选项和清单说明见 [tests/README.md](tests/README.md)。
 
 ```bash
 PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 ```
 
-目前共 20 项自动测试：M1 原有 11 项，M2 9 项。M2 测试只使用现有 `test_64`/`test_32`，覆盖函数与代码范围、BPA-X 用户函数过滤、图与指令完整性、独立线性反汇编调用清单、未解析间接调用与续点、AT 证据、M1 身份校验、导出确定性及 CLI 复用 M1。6 个 bzip2 样本的函数、基本块和边已与 BPA-X 逐项对照一致；对照脚本见 [tests/compare_m2_bpax.py](tests/compare_m2_bpax.py)。
+目前共 38 项自动测试：M1 11 项、M2 9 项、M3 18 项。M3 覆盖事实完整性、原始语义、调用效果、阶段复用及 PIE 重定位；PIE 专项复用同一份 C 源码在临时目录编译。`test_64`/`test_32` 的 M3 投影分别通过 BPA-X 的 19 项结构对照，脚本见 [tests/compare_m3_bpax.py](tests/compare_m3_bpax.py)。6 个 bzip2 样本的 M3 提取、产物完整性和 Souffle 读取检查也已通过；历史 M2 对照见 [tests/compare_m2_bpax.py](tests/compare_m2_bpax.py)。
 
-M1 与 M2 均已完成本地实现和固定样本测试。实现过程、产物契约、验证记录及复现命令分别整理在 [docs/M1.md](docs/M1.md) 和 [docs/M2.md](docs/M2.md)。M2 的 bzip2 对照只覆盖函数入口/名称和导出代码范围；尚未在大型程序、PIE 或 stripped 样本上验收。历史运行产物已清理，需要时可重新生成。
+各阶段实现过程、产物契约、验证记录及复现命令见 [docs/M1.md](docs/M1.md)、[docs/M2.md](docs/M2.md) 和 [docs/M3.md](docs/M3.md)。简单 C 程序及真实 facts 展示见 [examples/README.md](examples/README.md)。M3 当前完成固定小样本、临时 PIE 和 bzip2 六样本提取验证，尚未完成大型程序或 stripped 样本验收。

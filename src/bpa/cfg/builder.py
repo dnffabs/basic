@@ -12,6 +12,7 @@ from capstone import CS_GRP_CALL, CS_GRP_JUMP, CS_GRP_RET
 from capstone.x86_const import X86_OP_IMM, X86_OP_MEM, X86_REG_EIP, X86_REG_RIP
 
 from bpa.model import BinaryInfo
+from bpa.lifting import VEX_LIFT_OPTIONS
 from bpa.model.cfg import ATEvidence, BasicBlock, CFGResult, Edge, Function, Instruction, Transfer
 
 
@@ -188,7 +189,7 @@ def build_cfg(info: BinaryInfo) -> CFGResult:
             owners[address].add(entry - bias)
     blocks, machine = {}, {}
     for address, node in sorted(nodes.items()):
-        block = project.factory.block(address, size=node.size)
+        block = project.factory.block(address, size=node.size, **VEX_LIFT_OPTIONS)
         jumpkind = block.vex.jumpkind
         decoded = [wrapped.insn for wrapped in block.capstone.insns]
         if not decoded:
@@ -317,5 +318,6 @@ def build_cfg(info: BinaryInfo) -> CFGResult:
         records, blocks.values(), transfers, diagnostics, text_ranges
     )
     return CFGResult(info.path, info.sha256, info.arch, info.bits, info.entry, angr.__version__,
-                     dict(options, function_starts="M1 defined function symbols"), exported_functions,
+                     dict(options, function_starts="M1 defined function symbols",
+                          vex_lift_options=dict(VEX_LIFT_OPTIONS)), exported_functions,
                      exported_blocks, ordered_edges, exported_transfers, diagnostics)

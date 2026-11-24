@@ -7,7 +7,10 @@ tests/
 ├── test_loader.py
 ├── test_loader_extended.py
 ├── test_cfg.py
+├── test_vex.py
 ├── compare_m1_bpax.py
+├── compare_m2_bpax.py
+├── compare_m3_bpax.py
 └── fixtures/
     ├── sources/test.c  # 唯一的 C 测试程序
     ├── binaries/
@@ -49,9 +52,9 @@ bpa-test: 13 5 8 9
 PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 ```
 
-日常测试直接读取 `binaries/`，不会自动调用 GCC。只有明确修改或重建测试集时才运行 `build.sh`；重建会更新二进制和清单。清单保存源码与二进制的 SHA256，以识别样本变化；记录的是本次实际编译结果，不保证更换编译器或系统后仍得到相同字节。
+固定样本测试直接读取 `binaries/`，不自动重建这些 ELF。M3 的 PIE 专项测试会使用本地 GCC 和同一份 `test.c` 在临时目录编译 PIE，测试结束后删除。只有明确修改或重建固定测试集时才运行 `build.sh`；重建会更新二进制和清单。清单保存源码与二进制的 SHA256，以识别样本变化；记录的是本次实际编译结果，不保证更换编译器或系统后仍得到相同字节。
 
-目前共有 20 项自动测试：M1 原有 11 项，M2 9 项。M1 覆盖基础 ELF 读取、32/64 位信息、样本完整性、原生行为、命令行输出，以及符号/导入/依赖/PLT、重定位后的导入槽、函数指针表、全局初始内容、BSS 零填充、JSON 往返；两项回归覆盖输出硬链接/符号链接保护和节区文件范围检查。
+目前共有 38 项自动测试：M1 11 项、M2 9 项、M3 18 项。M1 覆盖基础 ELF 读取、32/64 位信息、样本完整性、原生行为、命令行输出，以及符号/导入/依赖/PLT、重定位后的导入槽、函数指针表、全局初始内容、BSS 零填充、JSON 往返；两项回归覆盖输出硬链接/符号链接保护和节区文件范围检查。
 
 M2 的 `test_cfg.py` 直接复用 `test_64`/`test_32`，没有新增 C 程序或重新编译，覆盖：
 
@@ -108,3 +111,18 @@ PYTHONPATH=src uv run --locked python tests/compare_m2_bpax.py \
 - 边：`(源块最后一条指令, 目标块第一条指令)` 集合，排除 M2 独有、BPA-X 不输出的 `fake_return` 假设边。
 
 结果写入 `outputs/m2_compare/<样本名>/comparison.json`，任一差异导致非零退出。默认会重新生成 facts；已有 facts 时可用 `--facts-dir` 复用。默认参考路径与 M1 对照脚本相同，另可用 `--souffle` 和 `--readelf-bin` 指定工具。完整 bzip2 对照仍不运行 BPA-X 指针分析求解器。
+
+## M3 语义与 BPA-X 对照
+
+`test_vex.py` 包括固定样本提取、人工构造的 VEX 语义检查、产物完整性和临时 PIE 重定位测试。具体覆盖范围见 [docs/M3.md](../docs/M3.md)。
+
+```bash
+PYTHONPATH=src uv run --locked python tests/compare_m3_bpax.py \
+  tests/fixtures/binaries/test_64 --output outputs/m3_compare/test_64
+PYTHONPATH=src uv run --locked python tests/compare_m3_bpax.py \
+  tests/fixtures/binaries/test_32 --output outputs/m3_compare/test_32
+```
+
+该脚本运行 BPA-X 实际前端，比较消除 ID 差异后的读写、运算和转换依赖结构，共 19 项检查，报告为输出目录的 `comparison.json`。目前只支持 ELF VA 等于 mapped VA 的样本；不运行 M4 或最终指针求解。本轮两个固定样本均通过，未进行 M3 的 bzip2 对照。
+
+另已对 bzip2 的 32/64 位、O0/O1/O2 六个样本完成 M3 提取、facts 哈希与引用校验、Souffle 实际读取检查。产物位于 `outputs/m3_bzip2/`，具体计数和限制见 [docs/M3.md](../docs/M3.md)。简单 C 示例和真实 facts 展示见 [examples/README.md](../examples/README.md)。
