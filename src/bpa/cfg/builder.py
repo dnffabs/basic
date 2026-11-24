@@ -1,6 +1,7 @@
 """Initial CFG and function observations behind an angr-independent interface."""
 
 from collections import defaultdict
+from dataclasses import replace
 import hashlib
 from io import BytesIO
 from pathlib import Path
@@ -16,6 +17,113 @@ from bpa.model.cfg import ATEvidence, BasicBlock, CFGResult, Edge, Function, Ins
 
 class CFGError(ValueError):
     """The supplied M1 artifact cannot produce a consistent initial CFG."""
+
+
+# Mirrors BPA-X's pre-process/user_defined_addr_func.dl list.
+_COMPILER_BUILTINS = frozenset({
+    "deregister_tm_clones", "register_tm_clones", "frame_dummy",
+    "__libc_csu_init", "__libc_csu_fini", "__libc_start_main",
+    "__do_global_dtors_aux", "_fini", "__x86.get_pc_thunk.bx",
+    "__x86.get_pc_thunk.dx", "_start", "_start_c", "__errno_location",
+    "__stack_chk_fail", "_dl_relocate_static_pie", "__plt_dispatcher",
+    "_init", "__divsc3", "__mulsc3", "__umoddi3", "__udivdi3",
+    "__moddi3", "__divdi3",
+})
+
+
+def _is_user_defined(function: Function, text_ranges) -> bool:
+    """Apply BPA-X's user-defined function filter to an exported function."""
+    if (function.name.startswith("sub_") or function.is_plt
+            or function.name in _COMPILER_BUILTINS):
+        return False
+    # BPA-X requires the entry to be inside .text. Fall back to the executable
+    # regions when a section table is unavailable.
+    return (not text_ranges
+            or any(start <= function.entry < end for start, end in text_ranges))
+
+
+def _export_user_defined(functions, blocks, transfers, diagnostics, text_ranges):
+    """Mirror BPA-X's sub_* merge and user_defined_addr_func filtering.
+
+    CFGFast emits one-block sub_* entries for alignment padding and jump
+    thunks on bzip2. BPA-X merges them into the preceding function before
+    filtering compiler built-ins and PLT; do the same for the exported view.
+    Blocks that lose their only owner remain in the graph and are diagnosed.
+    """
+    ordered = sorted(functions, key=lambda function: function.entry)
+    predecessors = {}
+    previous = None
+    for function in ordered:
+        if function.name.startswith("sub_"):
+            predecessors[function.entry] = previous
+        else:
+            previous = function.entry
+
+    # BPA-X's addr_func upper bound is the next raw function start, and
+    # func-bound-merge absorbs consecutive sub_* functions into the preceding
+    # one. The merged upper of an exported function is therefore the first
+    # following non-sub_* entry; using it keeps code_ranges end addresses
+    # aligned with BPA-X, including trailing alignment padding.
+    merged_upper = {}
+    for index, function in enumerate(ordered):
+        following = index + 1
+        while following < len(ordered) and ordered[following].name.startswith("sub_"):
+            following += 1
+        merged_upper[function.entry] = (
+            ordered[following].entry if following < len(ordered) else None)
+
+    kept = {function.entry for function in ordered if _is_user_defined(function, text_ranges)}
+    owner_map = {}
+    for function in ordered:
+        if function.entry in kept:
+            owner_map[function.entry] = function.entry
+        elif function.name.startswith("sub_"):
+            target = predecessors[function.entry]
+            owner_map[function.entry] = target if target in kept else None
+        else:
+            owner_map[function.entry] = None
+
+    def remap(entries):
+        return tuple(sorted({owner_map[entry] for entry in entries
+                             if owner_map.get(entry) is not None}))
+
+    exported_blocks = []
+    diagnostics = list(diagnostics)
+    diagnostic_set = set(diagnostics)
+    for block in blocks:
+        owners = remap(block.function_entries)
+        if block.function_entries and not owners:
+            message = f"Block has no user-defined function owner: {block.address:#x}"
+            if message not in diagnostic_set:
+                diagnostics.append(message)
+                diagnostic_set.add(message)
+        exported_blocks.append(replace(block, function_entries=owners))
+
+    blocks_by_owner = defaultdict(list)
+    for block in exported_blocks:
+        for entry in block.function_entries:
+            blocks_by_owner[entry].append(block)
+    exported_functions = []
+    for function in ordered:
+        if function.entry not in kept:
+            continue
+        owned = blocks_by_owner[function.entry]
+        ranges = list(_ranges((block.address, block.address + block.size) for block in owned))
+        upper = merged_upper.get(function.entry)
+        if ranges and upper is not None and upper > ranges[-1][1]:
+            ranges[-1] = (ranges[-1][0], upper)
+        exported_functions.append(replace(
+            function,
+            blocks=tuple(block.address for block in owned),
+            code_ranges=tuple(ranges),
+        ))
+
+    exported_transfers = [
+        replace(transfer, function_entries=remap(transfer.function_entries))
+        for transfer in transfers
+    ]
+    return (tuple(exported_functions), tuple(exported_blocks),
+            tuple(exported_transfers), tuple(diagnostics))
 
 
 def _ranges(intervals):
@@ -203,6 +311,11 @@ def build_cfg(info: BinaryInfo) -> CFGResult:
             is_plt=entry in plt, address_taken=bool(evidence[entry]),
             at_evidence=tuple(ATEvidence(source, address) for source, address in sorted(evidence[entry])),
         ))
+    text_ranges = tuple((section.virtual_address, section.virtual_address + section.size)
+                        for section in info.sections if section.name == ".text" and section.size)
+    exported_functions, exported_blocks, exported_transfers, diagnostics = _export_user_defined(
+        records, blocks.values(), transfers, diagnostics, text_ranges
+    )
     return CFGResult(info.path, info.sha256, info.arch, info.bits, info.entry, angr.__version__,
-                     dict(options, function_starts="M1 defined function symbols"), tuple(records),
-                     tuple(blocks.values()), ordered_edges, tuple(transfers), tuple(diagnostics))
+                     dict(options, function_starts="M1 defined function symbols"), exported_functions,
+                     exported_blocks, ordered_edges, exported_transfers, diagnostics)

@@ -51,11 +51,12 @@ PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 
 日常测试直接读取 `binaries/`，不会自动调用 GCC。只有明确修改或重建测试集时才运行 `build.sh`；重建会更新二进制和清单。清单保存源码与二进制的 SHA256，以识别样本变化；记录的是本次实际编译结果，不保证更换编译器或系统后仍得到相同字节。
 
-目前共有 19 项自动测试：M1 原有 11 项，M2 新增 8 项。M1 覆盖基础 ELF 读取、32/64 位信息、样本完整性、原生行为、命令行输出，以及符号/导入/依赖/PLT、重定位后的导入槽、函数指针表、全局初始内容、BSS 零填充、JSON 往返；两项回归覆盖输出硬链接/符号链接保护和节区文件范围检查。
+目前共有 20 项自动测试：M1 原有 11 项，M2 9 项。M1 覆盖基础 ELF 读取、32/64 位信息、样本完整性、原生行为、命令行输出，以及符号/导入/依赖/PLT、重定位后的导入槽、函数指针表、全局初始内容、BSS 零填充、JSON 往返；两项回归覆盖输出硬链接/符号链接保护和节区文件范围检查。
 
 M2 的 `test_cfg.py` 直接复用 `test_64`/`test_32`，没有新增 C 程序或重新编译，覆盖：
 
 - 函数入口、符号结束地址和恢复代码范围；
+- 仅导出 BPA-X 口径的用户函数（`sub_*`、PLT、编译器内置函数被过滤/合并）；
 - 基本块、指令连续性与边/归属一致性；
 - 按符号范围独立线性反汇编核对调用清单（`main` 为 7 个直接调用）；
 - `apply`/`invoke` 的未解析间接调用及调用续点；
@@ -66,7 +67,7 @@ M2 的 `test_cfg.py` 直接复用 `test_64`/`test_32`，没有新增 C 程序或
 
 M2 产物与命令见 [docs/M2.md](../docs/M2.md)。
 
-`binaries/bzip2` 是指向 `/home/qc/Desktop/common/binaries/bzip2` 的软链接，其中包含 32/64 位、O0/O1/O2 共 6 个真实样本；由外部目录维护，不由 build.sh 重建。可按 README 的命令分别导出 M1 结果。已完成的 M1 验证记录见 [docs/M1.md](../docs/M1.md)；历史运行产物已清理。M2 目前只在两个固定样本上验证，尚未在这些 bzip2 样本上运行或验收，也未运行完整 BPA-X 指针分析。
+`binaries/bzip2` 是指向 `/home/qc/Desktop/common/binaries/bzip2` 的软链接，其中包含 32/64 位、O0/O1/O2 共 6 个真实样本；由外部目录维护，不由 build.sh 重建。可按 README 的命令分别导出 M1 结果。已完成的 M1 验证记录见 [docs/M1.md](../docs/M1.md)；历史运行产物已清理。M2 已在这 6 个样本上完成函数、基本块和边对照：过滤后的函数入口/名称/代码范围与 BPA-X `user_defined_addr_func` 一致，块集合和（排除 `fake_return` 后的）边集合与 BPA-X facts 完全相等；未运行完整 BPA-X 指针分析。
 
 该软链接不提交 Git，新检出目录需要使用公共样本时创建：
 
@@ -92,3 +93,18 @@ PYTHONPATH=src uv run --locked python tests/compare_m1_bpax.py \
 ```
 
 默认参考源码为 `/home/qc/Desktop/rebuild/bpa_x`，参考解释器为已有的 `/home/qc/Desktop/binwork/mywork/BPA/.venv/bin/python`；可以通过 `--bpax-root` 和 `--reference-python` 修改。本脚本只比较 M1 对应信息，不运行 CFG 或最终指针分析。
+
+## M2 函数/块/边对照
+
+```bash
+PYTHONPATH=src uv run --locked python tests/compare_m2_bpax.py \
+  tests/fixtures/binaries/bzip2/x64/bzip2_64_O2
+```
+
+脚本先用 BPA-X 原有的 `gen_facts.py` 生成 CFGFast facts，再依次运行 `func-bound-merge.dl` 和 `user_defined_addr_func.dl`，然后构建 M2 并逐项比较：
+
+- 函数：入口、名称，以及按“下一个非 `sub_*` 函数入口”定义的代码范围；
+- 基本块：`(块起始, 最后一条指令地址)` 集合；
+- 边：`(源块最后一条指令, 目标块第一条指令)` 集合，排除 M2 独有、BPA-X 不输出的 `fake_return` 假设边。
+
+结果写入 `outputs/m2_compare/<样本名>/comparison.json`，任一差异导致非零退出。默认会重新生成 facts；已有 facts 时可用 `--facts-dir` 复用。默认参考路径与 M1 对照脚本相同，另可用 `--souffle` 和 `--readelf-bin` 指定工具。完整 bzip2 对照仍不运行 BPA-X 指针分析求解器。

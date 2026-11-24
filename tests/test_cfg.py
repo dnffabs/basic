@@ -37,8 +37,32 @@ class CFGTests(unittest.TestCase):
                     symbol = next(s for s in self.infos[bits].symbols if s.name == name)
                     self.assertEqual(function.entry, symbol.elf_address)
                     self.assertEqual(function.symbol_end, symbol.elf_address + symbol.size)
-                    self.assertTrue(all(function.entry <= a < b <= function.symbol_end
+                    self.assertTrue(all(function.entry <= a < b
                                         for a, b in function.code_ranges))
+                    # BPA-X ends a function at the next function entry (which
+                    # can include trailing alignment padding past symbol_end).
+                    next_entry = min((s.elf_address for s in self.infos[bits].symbols
+                                      if s.is_function and s.elf_address is not None
+                                      and s.elf_address > symbol.elf_address),
+                                     default=None)
+                    if next_entry is not None:
+                        self.assertEqual(function.code_ranges[-1][1], next_entry)
+
+    def test_exports_only_bpax_user_defined_functions(self):
+        expected = {
+            64: {"main", "add", "subtract", "apply", "invoke"},
+            32: {"main", "add", "subtract", "apply", "invoke", "__wrap_main"},
+        }
+        for bits, result in self.results.items():
+            with self.subTest(bits=bits):
+                names = {function.name for function in result.functions}
+                self.assertEqual(names, expected[bits])
+                for function in result.functions:
+                    self.assertFalse(function.name.startswith("sub_"))
+                    self.assertFalse(function.is_plt)
+                for block in result.blocks:
+                    self.assertTrue(set(block.function_entries) <=
+                                    {function.entry for function in result.functions})
 
     def test_graph_and_instruction_integrity(self):
         for bits, result in self.results.items():

@@ -77,7 +77,7 @@ outputs/<样本名>/
     └── cfg.json
 ```
 
-两个 M2 文件使用 schema 1 和 `address_space: elf-va`，绑定 ELF 的 `binary_sha256`、架构/位宽、`backend_version` 与 CFGFast 选项。`functions.json` 记录函数的入口、名称、来源（`elf-symbol`/`plt`/`cfgfast`）、符号结束地址、归属块、恢复代码区间及 AT 证据；`cfg.json` 记录基本块与机器指令、边、逐块转移、未解析间接转移、诊断和统计。
+两个 M2 文件使用 schema 1 和 `address_space: elf-va`，绑定 ELF 的 `binary_sha256`、架构/位宽、`backend_version` 与 CFGFast 选项。`functions.json` 记录经 BPA-X 口径过滤后的用户函数：`sub_*` 伪函数先并入前一个函数，PLT、编译器内置函数和 `.text` 外函数不导出；字段包括入口、名称、来源（`elf-symbol`/`cfgfast`）、符号结束地址、归属块、恢复代码区间及 AT 证据。`cfg.json` 仍记录 CFGFast 恢复的全部基本块与机器指令、边、逐块转移、未解析间接转移、诊断和统计。
 
 主要约定：
 
@@ -85,7 +85,8 @@ outputs/<样本名>/
 - `fake_return`/`assumed-return` 只是调用续点假设；`return`/`cfgfast-return` 是 `CFGFast` 推断，二者都不是已完成的过程间指针求解。
 - 间接目标恢复时保留来源（含跳转表）；未恢复时保留 `unresolved`，未知的 `UnresolvableCallTarget` 占位节点不导出为真实目标。完整间接调用目标求解不属于 M2。
 - AT 候选来自非直接 CALL/JMP 指令的立即数、可恢复的 LEA 地址和全局初始机器字，只保留命中已恢复函数入口的证据；候选不等同于入口可达或完整指针分析。
-- 当前只验证了两个固定的小样本。M2 统计包含启动/运行库辅助代码和 PLT，尚未对大型程序、PIE、stripped 或 bzip2 做 M2 验收。
+- 函数清单按 BPA-X 的用户函数口径导出：`sub_*` 并入前一个函数，PLT、编译器内置函数和 `.text` 外函数被排除；代码范围结束地址对齐到下一个非 `sub_*` 函数入口。`cfg.json` 的块/边统计仍包含这些代码，失去函数所有者的块保留在图中并在 `diagnostics` 记录。
+- 当前只在两个固定小样本和 6 个 bzip2 样本上验证过。函数、基本块和边均与 BPA-X 的 CFGFast facts/预处理结果逐项一致（边对照排除 M2 独有的 `fake_return` 假设边）；尚未对大型程序、PIE 或 stripped 样本做验收。
 
 详细字段、边类型和测试结果见 [docs/M2.md](docs/M2.md)。
 
@@ -128,6 +129,6 @@ cfg = result.cfg_document()
 PYTHONPATH=src uv run --locked python -m unittest discover -s tests -v
 ```
 
-目前共 19 项自动测试：M1 原有 11 项，M2 新增 8 项。M2 测试只使用现有 `test_64`/`test_32`，覆盖函数与代码范围、图与指令完整性、独立线性反汇编调用清单、未解析间接调用与续点、AT 证据、M1 身份校验、导出确定性及 CLI 复用 M1。
+目前共 20 项自动测试：M1 原有 11 项，M2 9 项。M2 测试只使用现有 `test_64`/`test_32`，覆盖函数与代码范围、BPA-X 用户函数过滤、图与指令完整性、独立线性反汇编调用清单、未解析间接调用与续点、AT 证据、M1 身份校验、导出确定性及 CLI 复用 M1。6 个 bzip2 样本的函数、基本块和边已与 BPA-X 逐项对照一致；对照脚本见 [tests/compare_m2_bpax.py](tests/compare_m2_bpax.py)。
 
-M1 与 M2 均已完成本地实现和固定样本测试。实现过程、产物契约、验证记录及复现命令分别整理在 [docs/M1.md](docs/M1.md) 和 [docs/M2.md](docs/M2.md)。M2 尚未在 bzip2、大型程序、PIE 或 stripped 样本上验收；历史运行产物已清理，需要时可重新生成。
+M1 与 M2 均已完成本地实现和固定样本测试。实现过程、产物契约、验证记录及复现命令分别整理在 [docs/M1.md](docs/M1.md) 和 [docs/M2.md](docs/M2.md)。M2 的 bzip2 对照只覆盖函数入口/名称和导出代码范围；尚未在大型程序、PIE 或 stripped 样本上验收。历史运行产物已清理，需要时可重新生成。
