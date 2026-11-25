@@ -1,0 +1,121 @@
+.decl load_enabled(ctx: unsigned, kind: symbol, access: unsigned)
+.decl store_enabled(ctx: unsigned, kind: symbol, access: unsigned)
+load_enabled(c, k, a) :- load_at(c, k, a, _, _, _, _, 0).
+load_enabled(c, k, a) :- load_at(c, k, a, _, _, _, _, g), truth(c, g, 1).
+store_enabled(c, k, a) :- store_at(c, k, a, _, _, _, _, _, 0).
+store_enabled(c, k, a) :- store_at(c, k, a, _, _, _, _, _, g), truth(c, g, 1).
+
+.decl access_address(ctx: unsigned, kind: symbol, access: unsigned, expr: unsigned, bytes: unsigned)
+access_address(c, k, a, e, n) :- load_at(c, k, a, _, e, n, _, _), load_enabled(c, k, a).
+access_address(c, k, a, e, n) :- store_at(c, k, a, _, e, _, n, _, _), store_enabled(c, k, a).
+
+.decl target_raw(ctx: unsigned, kind: symbol, access: unsigned, location: Value, bytes: unsigned)
+.decl target(ctx: unsigned, kind: symbol, access: unsigned, location: Value, bytes: unsigned)
+target_raw(c, k, a, l, n) :- access_address(c, k, a, _, n), access_seed(c, k, a, l).
+target_raw(c, k, a, [t, b, f, o, x], n) :- access_address(c, k, a, e, n),
+    !seeded(c, k, a), value(c, e, [t, b, f, o, x]), memory_kind(t), limits(t, b, lo, hi),
+    (x = 0; o >= lo, o < hi).
+.decl unknown_address(ctx: unsigned, expr: unsigned)
+unknown_address(c, e) :- value(c, e, [t, _, _, _, _]), !memory_kind(t), t != "integer".
+unknown_address(c, e) :- value(c, e, ["integer", x, _, _, _]), x != 0.
+target_raw(c, k, a, ["stack_any", 0, 0, 0, 0], n) :- access_address(c, k, a, e, n),
+    unknown_address(c, e), stack_transfer(c, a), !seeded(c, k, a).
+target_raw(c, k, a, ["any", 0, 0, 0, 0], n) :- access_address(c, k, a, e, n),
+    unknown_address(c, e), !stack_transfer(c, a), !seeded(c, k, a).
+.decl alias_path(from: Value, to: Value)
+alias_path(l, o) :- alias(l, o).
+alias_path(l, r) :- alias_path(l, o), alias(o, r).
+target(c, k, a, o, n) :- target_raw(c, k, a, l, n), alias_path(l, o), !alias(o, _).
+target(c, k, a, o, n) :- target_raw(c, k, a, l, n), alias_path(l, o), alias_path(o, o).
+target(c, k, a, l, n) :- target_raw(c, k, a, l, n), !alias(l, _).
+
+.decl read_request(ctx: unsigned, kind: symbol, access: unsigned, point: unsigned, query: Query)
+.decl need(ctx: unsigned, point: unsigned, query: Query)
+read_request(c, k, a, p, [l, n, endian]) :- load_at(c, k, a, p, _, n, endian, _), target(c, k, a, l, n).
+need(c, p, q) :- read_request(c, _, _, p, q).
+need(c, p, [l, n, e]) :- flow(c, p, d, r), need(d, r, [l, n, e]), !strong(c, p, l, n).
+
+.decl reaching(ctx: unsigned, point: unsigned, query: Query, origin: unsigned, kind: symbol, def: unsigned, full: unsigned)
+reaching(c, p, q, 0, "initial", 0, 1) :- root(c, p), need(c, p, q).
+reaching(d, r, [l, n, e], o, k, s, f) :- flow(c, p, d, r), need(d, r, [l, n, e]),
+    reaching(c, p, [l, n, e], o, k, s, f), !strong(c, p, l, n).
+
+.decl writes(ctx: unsigned, point: unsigned, kind: symbol, access: unsigned, location: Value, bytes: unsigned, endian: symbol)
+writes(c, p, k, a, l, n, e) :- store_at(c, k, a, p, _, _, n, e, _), target(c, k, a, l, n).
+
+// Exact full-width definitions, plus the possibility of an exact hit for a wildcard location.
+reaching(d, r, [q, n, e], c, k, a, 1) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    writes(c, p, k, a, s, n, e), q = [t, b, f, x, w], s = [t, b, f, y, h],
+    memory_kind(t), (w = 0; h = 0; x = y).
+// Partial overlap yields an unknown full value, alongside any possible exact hit.
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    writes(c, p, k, a, s, m, z), q = [t, b, f, x, w], s = [t, b, f, y, h], memory_kind(t),
+    (w = 0; h = 0; x < y + as(m, number), y < x + as(n, number), (x != y; n != m; e != z)).
+.decl global_start(block: unsigned, address: number)
+.input global_start
+// M4 identifies the block containing the start of an access. Its bytes can cross a boundary.
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    writes(c, p, k, a, s, m, _), q = ["global", b, 0, x, 1], s = ["global", j, 0, y, 1], b != j,
+    global_start(b, u), global_start(j, v), u+x < v+y+as(m, number), v+y < u+x+as(n, number).
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    writes(c, p, k, a, s, m, _), q = ["stack", b, f, x, 1], s = ["stack", j, f, y, 1], b != j,
+    x < y+as(m, number), y < x+as(n, number).
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    writes(c, p, k, a, ["any", 0, 0, 0, 0], _, _), q = [t, b, _, _, _],
+    (t != "global"; !readonly_global(b)).
+reaching(d, r, [q, n, e], c, k, a, 1) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    writes(c, p, k, a, ["any", 0, 0, 0, 0], n, e), q = [t, b, _, _, _], memory_kind(t),
+    (t != "global"; !readonly_global(b)).
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    q = ["stack", _, _, _, _], writes(c, p, k, a, ["stack_any", 0, 0, 0, 0], _, _).
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    q = ["any", 0, 0, 0, 0], writes(c, p, k, a, _, _, _).
+reaching(d, r, [q, n, e], c, k, a, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    q = ["stack_any", 0, 0, 0, 0], writes(c, p, k, a, [t, _, _, _, _], _, _),
+    (t = "stack"; t = "stack_any").
+.decl readonly_global(block: unsigned)
+.input readonly_global
+reaching(d, r, [q, n, e], c, "opaque", s, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    havoc(c, p, s, "mutable"), q = [t, b, _, _, _], (t != "global"; !readonly_global(b)).
+reaching(d, r, [q, n, e], c, "opaque", s, 0) :- flow(c, p, d, r), need(d, r, [q, n, e]),
+    havoc(c, p, s, "heap"), q = ["heap", _, _, _, _].
+
+.decl observed(ctx: unsigned, kind: symbol, access: unsigned, query: Query, origin: unsigned, def_kind: symbol, def: unsigned, full: unsigned)
+observed(c, k, a, q, o, t, d, f) :- read_request(c, k, a, p, q), reaching(c, p, q, o, t, d, f).
+.decl load_source(ctx: unsigned, kind: symbol, access: unsigned, origin: unsigned, def_kind: symbol, def: unsigned)
+load_source(c, k, a, o, t, d) :- observed(c, k, a, _, o, t, d, _).
+.decl loaded(ctx: unsigned, kind: symbol, access: unsigned, value: Value)
+loaded(c, k, a, v) :- observed(c, k, a, _, o, t, d, 1), store_at(o, t, d, _, _, rhs, _, _, _), value(o, rhs, v).
+loaded(c, k, a, ["unknown", 0, 0, 0, 0]) :- observed(c, k, a, _, _, _, _, 0).
+loaded(c, k, a, v) :- observed(c, k, a, [l, n, e], 0, "initial", 0, 1), image(l, n, e, v).
+loaded(c, k, a, ["unknown", 0, 0, 0, 0]) :- observed(c, k, a, [l, n, e], 0, "initial", 0, 1),
+    !image(l, n, e, _).
+loaded(c, k, a, v) :- observed(c, k, a, [[t, b, f, _, 0], n, e], 0, "initial", 0, 1),
+    image([t, b, f, _, 1], n, e, v).
+
+value(c, e, v) :- loaded(c, "load", e, v).
+.decl guarded_result(ctx: unsigned, access: unsigned, guard: unsigned, alternate: unsigned, bits: unsigned, sign: unsigned, convert: unsigned)
+.input guarded_result
+value(c, s, v) :- guarded_result(c, s, _, _, _, _, 0), loaded(c, "guarded_load", s, v).
+value(c, s, w) :- guarded_result(c, s, _, _, n, sg, 1), loaded(c, "guarded_load", s, v), cast_value(v, 0, n, sg, w).
+value(c, s, ["unknown", 0, 0, 0, 0]) :- guarded_result(c, s, _, _, _, _, 2), loaded(c, "guarded_load", s, _).
+value(c, s, v) :- guarded_result(c, s, g, a, _, _, _), truth(c, g, 0), value(c, a, v).
+cast_shape(0, n, sg) :- guarded_result(_, _, _, _, n, sg, 1).
+used_cast(v, 0, n, sg) :- guarded_result(c, s, _, _, n, sg, 1), loaded(c, "guarded_load", s, v).
+
+.decl expression(ctx: unsigned, expr: unsigned)
+.input expression
+.decl expr_value(ctx: unsigned, expr: unsigned, kind: symbol, base: unsigned, frame: unsigned, offset: number, exact: unsigned)
+expr_value(c, e, k, b, f, o, x) :- expression(c, e), value(c, e, [k, b, f, o, x]).
+expr_value(c, e, "unknown", 0, 0, 0, 0) :- expression(c, e), !value(c, e, _).
+.decl access_target(ctx: unsigned, kind: symbol, access: unsigned, block_kind: symbol, block: unsigned, frame: unsigned, offset: number, exact: unsigned, bits: unsigned)
+access_target(c, k, a, t, b, f, o, x, n * 8u) :- target(c, k, a, [t, b, f, o, x], n).
+.decl call_operand_value(ctx: unsigned, site: unsigned, expr: unsigned, kind: symbol, target: unsigned)
+call_operand_value(c, s, e, "function", a) :- indirect_operand(c, s, e), value(c, e, ["function", a, 0, 0, 1]).
+call_operand_value(c, s, e, "unknown", 0) :- indirect_operand(c, s, e), expression_kind(c, e, k), k != "function".
+call_operand_value(c, s, e, "unknown", 0) :- indirect_operand(c, s, e), !value(c, e, _).
+
+.output expr_value(IO=file, filename="expr_value.facts")
+.output access_target(IO=file, filename="access_target.facts")
+.output load_source(IO=file, filename="load_source.facts")
+.output call_operand_value(IO=file, filename="call_operand_value.facts")

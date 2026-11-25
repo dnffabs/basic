@@ -25,8 +25,10 @@ COLUMNS = {
     "register_read_def": "context expression definition_context definition",
     "partial_input": "context definition previous_context previous_definition",
     "call_link": "caller_context block call_site callee_context entry",
+    "tail_link": "caller_context block call_site callee_context entry",
     "return_link": "caller_context call_site callee_context return_block continuation",
     "opaque_return": "context block call_site continuation",
+    "opaque_tail_return": "tail_context block tail_site caller_context continuation",
 }
 PYTHON_OUTPUTS = ("register_bank", "context", "register_def", "register_read")
 GPRS = {
@@ -127,25 +129,40 @@ def _roots(blocks, entry, owners, local_edges, targets, continuations):
     return roots
 
 
-def _control_flow(rows, info, extra_targets, bank, facts):
+def _control_flow(rows, info, extra_targets, tail_targets, opaque_sites, added_continuations, bank, facts):
     blocks = {row[0] for row in rows["block"]}
     plts = {stub.elf_address for stub in info.plt}
     internal_blocks = blocks - plts
     calls = {site: (block, status) for block, site, kind, _, status in rows["control_transfer"]
              if kind == "call"}
+    jumps = {site: (block, status) for block, site, kind, _, status in rows["control_transfer"]
+             if kind == "jump"}
     known = defaultdict(set)
     for site, target in rows["known_target"]:
         if site in calls:
             known[site].add(target)
     for site, target in extra_targets:
-        if site not in calls or target not in blocks:
+        if site not in calls or (target not in blocks and target not in plts):
             raise ValueError(f"Invalid M5 call target: {site:#x} -> {target:#x}")
         known[site].add(target)
+    tails = defaultdict(set)
+    for site, target in tail_targets:
+        if site not in jumps or (target not in blocks and target not in plts):
+            raise ValueError(f"Invalid M5 tail target: {site:#x} -> {target:#x}")
+        tails[site].add(target)
+    if opaque_sites - (calls.keys() | tails.keys()):
+        raise ValueError("M5 opaque sites must be calls or recognized tail calls")
     external = {site for site, _ in rows["external_target"]}
     continuations = {site: target for site, target in rows["continuation"]
                      if site in calls and target in blocks}
+    call_end = {pc: pc + size for _, pc, size, _, _ in rows["instruction"] if pc in calls}
+    for site, target in added_continuations:
+        if call_end.get(site) != target or target not in blocks or continuations.get(site, target) != target:
+            raise ValueError(f"Invalid M5 continuation: {site:#x} -> {target:#x}")
+        continuations[site] = target
+    tail_edges = {(jumps[site][0], target) for site, targets in tails.items() for target in targets}
     local_edges = {(source, target) for source, target, kind, _ in rows["cfg_edge"]
-                   if kind not in ("call", "return", "fake_return")}
+                   if kind not in ("call", "return", "fake_return")} - tail_edges
     facts["local_edge"].extend(sorted(local_edges))
     facts["return_block"].extend((block,) for block, _, kind, _, _ in rows["control_transfer"]
                                  if kind == "return")
@@ -158,8 +175,15 @@ def _control_flow(rows, info, extra_targets, bank, facts):
         callees = targets & internal_blocks
         targets_by_block[block].update(callees)
         internal.extend((block, site, target) for target in sorted(callees))
-        if site in continuations and (status == "unresolved" or site in external or not callees or targets - callees):
+        if site in continuations and (site in opaque_sites or status == "unresolved"
+                                      or site in external or not callees or targets - callees):
             facts["opaque_call"].append((block, site, continuations[site]))
+    for site, targets in sorted(tails.items()):
+        block, status = jumps[site]
+        callees = targets & internal_blocks
+        targets_by_block[block].update(callees)
+        if site in opaque_sites or status == "unresolved" or site in external or targets - callees:
+            facts["opaque_tail"].append((block, site))
 
     roots = _roots(blocks, info.entry, {owner for _, owner in rows["block_function"]},
                    local_edges, targets_by_block,
@@ -168,7 +192,7 @@ def _control_flow(rows, info, extra_targets, bank, facts):
     # and call site so adding an edge does not renumber surviving definitions.
     first_id = 1 + max(row[0] for name in ("statement", "expression") for row in rows[name])
     block_order = {block: i for i, block in enumerate(sorted(blocks))}
-    call_order = {site: i for i, site in enumerate(sorted(calls))}
+    call_order = {site: i for i, site in enumerate((*sorted(calls), *sorted(jumps)))}
     for ctx, block in enumerate(sorted(roots), start=1):
         facts["context"].append((ctx, block, 0, "root"))
         facts["root"].append((ctx, block))
@@ -180,8 +204,14 @@ def _control_flow(rows, info, extra_targets, bank, facts):
     for ctx, (block, site, target) in enumerate(internal, start=len(roots) + 1):
         facts["context"].append((ctx, target, site, "call"))
         facts["internal_call"].append((block, site, target, ctx))
+    ctx = len(roots) + len(internal)
+    for site, targets in sorted(tails.items()):
+        for target in sorted(targets & internal_blocks):
+            ctx += 1
+            facts["context"].append((ctx, target, site, "tail"))
+            facts["internal_tail"].append((jumps[site][0], site, target, ctx))
     volatile = set(OPAQUE_REGS[info.arch].split())
-    for block, site, _ in facts["opaque_call"]:
+    for block, site, *_ in (*facts["opaque_call"], *facts["opaque_tail"]):
         for index, (reg, bits, name) in enumerate(bank):
             if name in volatile:
                 definition = first_id + (len(blocks) + call_order[site]) * len(bank) + index
@@ -190,8 +220,9 @@ def _control_flow(rows, info, extra_targets, bank, facts):
 
 
 def run_m5(binary: str | Path, output: str | Path, *, m3_path: str | Path | None = None,
-           mapped_base: int | None = None, souffle: str = "souffle", additional_call_targets=()) -> dict:
-    """Run register analysis using M3. Extra edges are (call instruction, target block) ELF VAs."""
+           mapped_base: int | None = None, souffle: str = "souffle", additional_call_targets=(),
+           additional_tail_targets=(), opaque_sites=(), additional_continuations=()) -> dict:
+    """Run register analysis. Extra edges are (instruction, target) ELF VAs."""
     from bpa.pipeline import run_m3
 
     binary, output = Path(binary).resolve(), Path(output).resolve()
@@ -220,15 +251,18 @@ def run_m5(binary: str | Path, output: str | Path, *, m3_path: str | Path | None
     facts = defaultdict(list)
     bank = _register_operations(raw.rows, archinfo.arch_from_id(info.arch), facts)
     extra_targets = sorted(set(additional_call_targets))
-    _control_flow(raw.rows, info, extra_targets, bank, facts)
+    tail_targets = sorted(set(additional_tail_targets))
+    opaque_sites = set(opaque_sites)
+    added_continuations = sorted(set(additional_continuations))
+    _control_flow(raw.rows, info, extra_targets, tail_targets, opaque_sites, added_continuations, bank, facts)
     dest = output / "m5"
     dest.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".m5-", dir=dest) as scratch:
         work = Path(scratch)
         published = work / "facts"
         published.mkdir()
-        for name in ("root", "entry_def", "local_edge", "internal_call", "continuation", "return_block",
-                     "opaque_call", "clobber", "last_write", "local_use", "entry_use", "register_read",
+        for name in ("root", "entry_def", "local_edge", "internal_call", "internal_tail", "continuation", "return_block",
+                     "opaque_call", "opaque_tail", "clobber", "last_write", "local_use", "entry_use", "register_read",
                      "partial_definition"):
             _write_rows(work / f"{name}.facts", facts[name])
         for name in PYTHON_OUTPUTS:
@@ -255,6 +289,8 @@ def run_m5(binary: str | Path, output: str | Path, *, m3_path: str | Path | None
         result = dict(stage="M5", schema="bpa.m5.v1", address_space="elf-va", arch=info.arch,
                       binary_sha256=info.sha256, m3_manifest_sha256=m3_digest, context_depth=1,
                       register_state="whole-gpr-with-partial-updates", additional_call_targets=extra_targets,
+                      additional_tail_targets=tail_targets, opaque_sites=sorted(opaque_sites),
+                      additional_continuations=added_continuations,
                       facts_dir=generation, columns={name: fields.split() for name, fields in COLUMNS.items()},
                       files=hashes, counts=counts)
         write_json(dest / "manifest.json", result, binary=binary)

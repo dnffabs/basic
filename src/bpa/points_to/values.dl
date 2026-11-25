@@ -1,0 +1,147 @@
+// A value is (kind, ELF address/block ID/raw integer, stack frame, offset, exact offset).
+.type Value = [kind: symbol, base: unsigned, frame: unsigned, offset: number, exact: unsigned]
+.type Query = [location: Value, bytes: unsigned, endian: symbol]
+
+.decl seed(ctx: unsigned, expr: unsigned, val: Value)
+.decl def_seed(ctx: unsigned, def: unsigned, val: Value)
+.decl def_rhs(ctx: unsigned, def: unsigned, expr: unsigned)
+.decl read_def(ctx: unsigned, expr: unsigned, origin: unsigned, def: unsigned, low: unsigned, bits: unsigned)
+.decl partial(ctx: unsigned, def: unsigned, origin: unsigned, previous: unsigned, expr: unsigned, low: unsigned, bits: unsigned)
+.decl copy(ctx: unsigned, expr: unsigned, source: unsigned)
+.decl cast(ctx: unsigned, expr: unsigned, source: unsigned, low: unsigned, bits: unsigned, signed_bits: unsigned)
+.decl select_value(ctx: unsigned, expr: unsigned, guard: unsigned, yes: unsigned, no: unsigned)
+.decl arithmetic(ctx: unsigned, expr: unsigned, op: symbol, left: unsigned, right: unsigned)
+.decl comparison(ctx: unsigned, expr: unsigned, equality: unsigned, left: unsigned, right: unsigned)
+.decl numeric(val: Value, raw: unsigned)
+.decl number_value(raw: unsigned, val: Value)
+.decl pointer_size(bits: unsigned)
+.decl limits(kind: symbol, block: unsigned, lower: number, upper: number)
+.decl alias(from: Value, to: Value)
+.input seed, def_seed, def_rhs, read_def, partial, copy, cast, select_value, arithmetic, comparison
+.input numeric, number_value, pointer_size, limits, alias
+
+.decl flow(ctx: unsigned, point: unsigned, next_ctx: unsigned, next_point: unsigned)
+.decl root(ctx: unsigned, point: unsigned)
+.decl load_at(ctx: unsigned, kind: symbol, access: unsigned, point: unsigned, addr: unsigned, bytes: unsigned, endian: symbol, guard: unsigned)
+.decl store_at(ctx: unsigned, kind: symbol, access: unsigned, point: unsigned, addr: unsigned, value: unsigned, bytes: unsigned, endian: symbol, guard: unsigned)
+.decl access_seed(ctx: unsigned, kind: symbol, access: unsigned, location: Value)
+.decl seeded(ctx: unsigned, kind: symbol, access: unsigned)
+.decl strong(ctx: unsigned, point: unsigned, location: Value, bytes: unsigned)
+.decl havoc(ctx: unsigned, point: unsigned, site: unsigned, scope: symbol)
+.decl stack_transfer(ctx: unsigned, access: unsigned)
+.decl image(location: Value, bytes: unsigned, endian: symbol, value: Value)
+.decl indirect_operand(ctx: unsigned, site: unsigned, expr: unsigned)
+.input flow, root, load_at, store_at, access_seed, seeded, strong, havoc, stack_transfer, image, indirect_operand
+
+.decl value(ctx: unsigned, expr: unsigned, val: Value)
+.decl definition(ctx: unsigned, def: unsigned, val: Value)
+.decl truth(ctx: unsigned, expr: unsigned, choice: unsigned)
+.decl cast_value(val: Value, low: unsigned, bits: unsigned, signed_bits: unsigned, result: Value)
+.decl raw_value(value: unsigned, bits: unsigned, result: Value)
+.decl int_mask(bits: unsigned, mask: unsigned)
+.decl partial_bits(ctx: unsigned, def: unsigned, raw: unsigned)
+
+value(c, e, v) :- seed(c, e, v).
+definition(c, d, v) :- def_seed(c, d, v).
+definition(c, d, v) :- def_rhs(c, d, e), value(c, e, v).
+value(c, e, v) :- read_def(c, e, o, d, 0, n), pointer_size(n), definition(o, d, v).
+value(c, e, w) :- read_def(c, e, o, d, l, n), pointer_size(p), n < p,
+    definition(o, d, v), cast_value(v, l, n, 0, w).
+value(c, e, v) :- copy(c, e, s), value(c, s, v).
+value(c, e, w) :- cast(c, e, s, l, n, sign), value(c, s, v), cast_value(v, l, n, sign, w).
+
+int_mask(n, (1u bshl n) - 1u) :- n = range(1u, 64u), n < 64u.
+int_mask(64, 18446744073709551615).
+raw_value(x, n, v) :- pointer_size(n), number_value(x, v).
+raw_value(x, n, ["integer", x, 0, 0, 1]) :- pointer_size(p), n != p, int_mask(n, m), x <= m,
+    number_value(x, _).
+raw_value(x, n, ["unknown", 0, 0, 0, 0]) :- int_mask(n, _), number_value_domain(x), !number_value(x, _).
+.decl number_value_domain(raw: unsigned)
+number_value_domain(x) :- cast_bits(_, _, _, _, x).
+number_value_domain(x) :- partial_bits(_, _, x).
+number_value_domain(x) :- integer_arithmetic(_, _, x).
+
+.decl known_bits(val: Value, raw: unsigned)
+known_bits(v, x) :- numeric(v, x).
+known_bits(["integer", x, 0, 0, 1], x) :- number_value(x, _).
+.decl cast_bits(val: Value, low: unsigned, bits: unsigned, signed_bits: unsigned, result: unsigned)
+.decl cast_shape(low: unsigned, bits: unsigned, signed_bits: unsigned)
+cast_shape(l, n, s) :- cast(_, _, _, l, n, s).
+cast_shape(l, n, 0) :- read_def(_, _, _, _, l, n), pointer_size(p), n < p.
+cast_bits(v, l, n, 0, (x bshr l) band m) :- known_bits(v, x), cast_shape(l, n, 0), int_mask(n, m).
+cast_bits(v, l, n, s, y) :- known_bits(v, x), cast_shape(l, n, s), s > 0,
+    int_mask(s, m), y = (x bshr l) band m, y < (1u bshl (s - 1u)).
+cast_bits(v, l, n, s, y bor (all bxor m)) :- known_bits(v, x), cast_shape(l, n, s), s > 0,
+    int_mask(s, m), int_mask(n, all), y = (x bshr l) band m, y >= (1u bshl (s - 1u)).
+cast_value(v, l, n, s, w) :- cast_bits(v, l, n, s, x), raw_value(x, n, w).
+cast_value(v, l, n, s, ["unknown", 0, 0, 0, 0]) :- used_cast(v, l, n, s), !known_bits(v, _).
+.decl used_cast(val: Value, low: unsigned, bits: unsigned, signed_bits: unsigned)
+used_cast(v, l, n, s) :- cast(c, _, e, l, n, s), value(c, e, v).
+used_cast(v, l, n, 0) :- read_def(_, _, o, d, l, n), pointer_size(p), n < p, definition(o, d, v).
+
+partial_bits(c, d, (x band (all bxor (m bshl l))) bor ((y band m) bshl l)) :-
+    partial(c, d, o, previous, e, l, n), definition(o, previous, a), value(c, e, b),
+    known_bits(a, x), known_bits(b, y), int_mask(n, m), pointer_size(p), int_mask(p, all).
+definition(c, d, v) :- partial_bits(c, d, x), pointer_size(p), raw_value(x, p, v).
+definition(c, d, ["unknown", 0, 0, 0, 0]) :- partial(c, d, o, previous, e, _, _),
+    definition(o, previous, a), value(c, e, _), !known_bits(a, _).
+definition(c, d, ["unknown", 0, 0, 0, 0]) :- partial(c, d, o, previous, e, _, _),
+    definition(o, previous, _), value(c, e, b), !known_bits(b, _).
+
+truth(c, e, 0) :- value(c, e, ["integer", 0, 0, 0, 1]).
+truth(c, e, 1) :- value(c, e, ["integer", x, 0, 0, 1]), x != 0.
+truth(c, e, 1) :- value(c, e, [k, _, _, _, _]), k != "integer".
+truth(c, e, 0) :- value(c, e, ["unknown", 0, 0, 0, 0]).
+value(c, e, v) :- select_value(c, e, g, a, _), truth(c, g, 1), value(c, a, v).
+value(c, e, v) :- select_value(c, e, g, _, b), truth(c, g, 0), value(c, b, v).
+value(c, e, ["integer", eq, 0, 0, 1]) :- comparison(c, e, eq, a, b),
+    value(c, a, u), value(c, b, v), known_bits(u, x), known_bits(v, x).
+value(c, e, ["integer", 1u - eq, 0, 0, 1]) :- comparison(c, e, eq, a, b),
+    value(c, a, u), value(c, b, v), known_bits(u, x), known_bits(v, y), x != y.
+value(c, e, ["unknown", 0, 0, 0, 0]) :- comparison(c, e, _, a, b),
+    value(c, a, u), value(c, b, v), (!known_bits(u, _); !known_bits(v, _)).
+
+.decl integer_arithmetic(ctx: unsigned, expr: unsigned, result: unsigned)
+integer_arithmetic(c, e, (x + y) band m) :- arithmetic(c, e, "add", a, b),
+    value(c, a, ["integer", x, 0, 0, 1]), value(c, b, ["integer", y, 0, 0, 1]), pointer_size(n), int_mask(n, m).
+integer_arithmetic(c, e, (x - y) band m) :- arithmetic(c, e, "sub", a, b),
+    value(c, a, ["integer", x, 0, 0, 1]), value(c, b, ["integer", y, 0, 0, 1]), pointer_size(n), int_mask(n, m).
+value(c, e, v) :- integer_arithmetic(c, e, x), pointer_size(n), raw_value(x, n, v).
+
+.decl displacement(raw: unsigned, signed: number)
+.input displacement
+.decl pointer_step(ctx: unsigned, expr: unsigned, val: Value, delta: number)
+.decl memory_kind(kind: symbol)
+memory_kind("global"). memory_kind("stack"). memory_kind("heap").
+pointer_step(c, e, p, d) :- arithmetic(c, e, "add", a, b), value(c, a, p),
+    p = [k, _, _, _, _], memory_kind(k), value(c, b, ["integer", x, 0, 0, 1]), displacement(x, d).
+pointer_step(c, e, p, d) :- arithmetic(c, e, "add", a, b), value(c, b, p),
+    p = [k, _, _, _, _], memory_kind(k), value(c, a, ["integer", x, 0, 0, 1]), displacement(x, d).
+pointer_step(c, e, p, -d) :- arithmetic(c, e, "sub", a, b), value(c, a, p),
+    p = [k, _, _, _, _], memory_kind(k), value(c, b, ["integer", x, 0, 0, 1]), displacement(x, d).
+value(c, e, v) :- pointer_step(c, e, v, 0).
+value(c, e, [k, b, f, d, 1]) :- pointer_step(c, e, [k, b, f, 0, 1], d), limits(k, b, lo, hi), d >= lo, d < hi.
+value(c, e, ["unknown", 0, 0, 0, 0]) :- pointer_step(c, e, [k, b, _, 0, 1], d), limits(k, b, lo, hi),
+    (d < lo; d >= hi).
+value(c, e, [k, b, f, 0, 0]) :- pointer_step(c, e, [k, b, f, o, 1], d), o != 0, d != 0.
+value(c, e, [k, b, f, 0, 0]) :- pointer_step(c, e, [k, b, f, _, 0], _).
+value(c, e, [k, id, f, 0, 0]) :- arithmetic(c, e, _, a, b), value(c, a, [k, id, f, _, _]),
+    memory_kind(k), value(c, b, ["unknown", 0, 0, 0, 0]).
+value(c, e, [k, id, f, 0, 0]) :- arithmetic(c, e, "add", a, b), value(c, b, [k, id, f, _, _]),
+    memory_kind(k), value(c, a, ["unknown", 0, 0, 0, 0]).
+
+.decl expression_kind(ctx: unsigned, expr: unsigned, kind: symbol)
+expression_kind(c, e, k) :- value(c, e, [k, _, _, _, _]).
+value(c, e, ["unknown", 0, 0, 0, 0]) :- arithmetic(c, e, op, a, b),
+    expression_kind(c, a, k), expression_kind(c, b, j), !arithmetic_supported(op, k, j).
+.decl arithmetic_supported(op: symbol, left: symbol, right: symbol)
+arithmetic_supported("add", "integer", "integer").
+arithmetic_supported("sub", "integer", "integer").
+arithmetic_supported("add", k, "integer") :- memory_kind(k).
+arithmetic_supported("sub", k, "integer") :- memory_kind(k).
+arithmetic_supported("add", "integer", k) :- memory_kind(k).
+arithmetic_supported("add", k, "unknown") :- memory_kind(k).
+arithmetic_supported("sub", k, "unknown") :- memory_kind(k).
+arithmetic_supported("add", "unknown", k) :- memory_kind(k).
+
+.include "memory.dl"
