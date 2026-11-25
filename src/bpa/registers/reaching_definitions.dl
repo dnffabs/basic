@@ -1,0 +1,62 @@
+// Contexts are function-entry and recent-callsite pairs assigned by the adapter.
+.decl root(ctx: unsigned, block: unsigned)
+.decl entry_def(ctx: unsigned, block: unsigned, reg: unsigned, def: unsigned)
+.decl local_edge(source: unsigned, target: unsigned)
+.decl internal_call(block: unsigned, site: unsigned, entry: unsigned, callee: unsigned)
+.decl continuation(site: unsigned, target: unsigned)
+.decl return_block(block: unsigned)
+.decl opaque_call(block: unsigned, site: unsigned, continuation: unsigned)
+.decl clobber(site: unsigned, reg: unsigned, def: unsigned)
+.decl last_write(block: unsigned, reg: unsigned, def: unsigned)
+.decl local_use(block: unsigned, use: unsigned, def: unsigned)
+.decl entry_use(block: unsigned, use: unsigned, reg: unsigned)
+.decl register_read(expression: unsigned, reg: unsigned, low_bit: unsigned, bits: unsigned)
+.decl partial_definition(def: unsigned)
+
+.input root, entry_def, local_edge, internal_call, continuation, return_block
+.input opaque_call, clobber, last_write, local_use, entry_use, register_read, partial_definition
+
+.decl active(ctx: unsigned, block: unsigned)
+.decl call_link(caller: unsigned, block: unsigned, site: unsigned, callee: unsigned, entry: unsigned)
+.decl return_link(caller: unsigned, site: unsigned, callee: unsigned, block: unsigned, continuation: unsigned)
+.decl opaque_return(ctx: unsigned, block: unsigned, site: unsigned, continuation: unsigned)
+.output active(IO=file, filename="context_block.facts")
+.output call_link(IO=file, filename="call_link.facts")
+.output return_link(IO=file, filename="return_link.facts")
+.output opaque_return(IO=file, filename="opaque_return.facts")
+
+active(c, b) :- root(c, b).
+active(c, b) :- local_edge(a, b), active(c, a).
+active(k, b) :- call_link(_, _, _, k, b).
+active(c, b) :- return_link(c, _, _, _, b).
+active(c, b) :- opaque_return(c, _, _, b).
+
+call_link(c, a, s, k, b) :- active(c, a), internal_call(a, s, b, k).
+return_link(c, s, k, a, b) :- call_link(c, _, s, k, _),
+    active(k, a), return_block(a), continuation(s, b).
+opaque_return(c, a, s, b) :- active(c, a), opaque_call(a, s, b).
+
+.decl state_in(ctx: unsigned, block: unsigned, reg: unsigned, origin: unsigned, def: unsigned)
+.decl state_out(ctx: unsigned, block: unsigned, reg: unsigned, origin: unsigned, def: unsigned)
+
+state_in(c, b, r, c, d) :- entry_def(c, b, r, d).
+state_in(c, b, r, o, d) :- local_edge(a, b), state_out(c, a, r, o, d).
+state_in(k, b, r, o, d) :- call_link(c, a, _, k, b), state_out(c, a, r, o, d).
+state_in(c, b, r, o, d) :- return_link(c, _, k, a, b), state_out(k, a, r, o, d).
+state_in(c, b, r, c, d) :- opaque_return(c, _, s, b), clobber(s, r, d).
+state_in(c, b, r, o, d) :- opaque_return(c, a, s, b), state_out(c, a, r, o, d), !clobber(s, r, _).
+
+state_out(c, b, r, c, d) :- active(c, b), last_write(b, r, d).
+state_out(c, b, r, o, d) :- state_in(c, b, r, o, d), !last_write(b, r, _).
+
+.decl use_def(ctx: unsigned, use: unsigned, origin: unsigned, def: unsigned)
+use_def(c, u, c, d) :- local_use(b, u, d), active(c, b).
+use_def(c, u, o, d) :- entry_use(b, u, r), state_in(c, b, r, o, d).
+
+.decl register_read_def(ctx: unsigned, expression: unsigned, def_ctx: unsigned, def: unsigned)
+.decl partial_input(ctx: unsigned, def: unsigned, previous_ctx: unsigned, previous_def: unsigned)
+.output register_read_def(IO=file, filename="register_read_def.facts")
+.output partial_input(IO=file, filename="partial_input.facts")
+
+register_read_def(c, e, o, d) :- use_def(c, e, o, d), register_read(e, _, _, _).
+partial_input(c, p, o, d) :- use_def(c, p, o, d), partial_definition(p).
